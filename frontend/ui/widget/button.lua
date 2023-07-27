@@ -8,7 +8,6 @@ A button widget that shows text or an icon and handles callback when tapped.
         enabled = false, -- defaults to true
         callback = some_callback_function,
         width = Screen:scaleBySize(50),
-        max_width = Screen:scaleBySize(100),
         bordersize = Screen:scaleBySize(3),
         margin = 0,
         padding = Screen:scaleBySize(2),
@@ -38,6 +37,7 @@ local DGENERIC_ICON_SIZE = G_defaults:readSetting("DGENERIC_ICON_SIZE")
 local Button = InputContainer:extend{
     text = nil, -- mandatory (unless icon is provided)
     text_func = nil,
+    lang = nil,
     icon = nil,
     icon_width = Screen:scaleBySize(DGENERIC_ICON_SIZE), -- our icons are square
     icon_height = Screen:scaleBySize(DGENERIC_ICON_SIZE),
@@ -55,6 +55,8 @@ local Button = InputContainer:extend{
     padding = Size.padding.button,
     padding_h = nil,
     padding_v = nil,
+    -- Provide only one of these two: 'width' to get a fixed width,
+    -- 'max_width' to allow it to be smaller if text or icon is smaller.
     width = nil,
     max_width = nil,
     avoid_text_truncation = true,
@@ -82,40 +84,57 @@ function Button:init()
         self.padding_v = self.padding
     end
 
-    local is_left_aligned = self.align == "left"
-    local right_margin = is_left_aligned and (2 * Size.padding.large) or 0
+    local outer_pad_width = 2*self.padding_h + 2*self.margin + 2*self.bordersize -- unscaled_size_check: ignore
 
+    -- If this button could be made smaller while still not needing truncation
+    -- or a smaller font size, we'll set this: it may allow an upper widget to
+    -- resize/relayout itself to look more compact/nicer (as this size would
+    -- depends on translations)
+    self._min_needed_width = nil
+
+    -- Our button's text may end up using a smaller font size, and/or be multiline.
+    -- We will give the button the height it would have if no such tweaks were
+    -- made. LeftContainer and CenterContainer will vertically center the
+    -- TextWidget or TextBoxWidget in that height (hopefully no ink will overflow)
+    local reference_height
     if self.text then
-        local max_width = self.max_width
-            and self.max_width - 2*self.padding_h - 2*self.margin - 2*self.bordersize - right_margin or nil
+        local max_width = self.max_width or self.width
+        if max_width then
+            max_width = max_width - outer_pad_width
+        end
         self.label_widget = TextWidget:new{
             text = self.text,
+            lang = self.lang,
             max_width = max_width,
             fgcolor = self.enabled and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
             bold = self.text_font_bold,
             face = Font:getFace(self.text_font_face, self.text_font_size)
         }
+        reference_height = self.label_widget:getSize().h
+        if not self.label_widget:isTruncated() then
+            self._min_needed_width = self.label_widget:getSize().w + outer_pad_width
+        end
         self.did_truncation_tweaks = false
         if self.avoid_text_truncation and self.label_widget:isTruncated() then
             self.did_truncation_tweaks = true
-            local max_height = self.label_widget:getSize().h
-            local font_size_2_lines = TextBoxWidget:getFontSizeToFitHeight(max_height, 2, 0)
+            local font_size_2_lines = TextBoxWidget:getFontSizeToFitHeight(reference_height, 2, 0)
             while self.label_widget:isTruncated() do
                 local new_size = self.label_widget.face.orig_size - 1
-                if new_size < font_size_2_lines then
+                if new_size <= font_size_2_lines then
                     -- Switch to a 2-lines TextBoxWidget
                     self.label_widget:free(true)
                     self.label_widget = TextBoxWidget:new{
                         text = self.text,
+                        lang = self.lang,
                         line_height = 0,
                         alignment = self.align,
                         width = max_width,
-                        height = max_height,
+                        height = reference_height,
                         height_adjust = true,
                         height_overflow_show_ellipsis = true,
                         fgcolor = self.enabled and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
                         bold = self.text_font_bold,
-                        face = Font:getFace(self.text_font_face, font_size_2_lines)
+                        face = Font:getFace(self.text_font_face, new_size)
                     }
                     if not self.label_widget.has_split_inside_word then
                         break
@@ -129,6 +148,7 @@ function Button:init()
                 self.label_widget:free(true)
                 self.label_widget = TextWidget:new{
                     text = self.text,
+                    lang = self.lang,
                     max_width = max_width,
                     fgcolor = self.enabled and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
                     bold = self.text_font_bold,
@@ -144,25 +164,30 @@ function Button:init()
             width = self.icon_width,
             height = self.icon_height,
         }
+        self._min_needed_width = self.icon_width + outer_pad_width
     end
     local widget_size = self.label_widget:getSize()
-    if self.width == nil then
-        self.width = widget_size.w
+    local label_container_height = reference_height or widget_size.h
+    local inner_width
+    if self.width then
+        inner_width = self.width - outer_pad_width
+    else
+        inner_width = widget_size.w
     end
     -- set FrameContainer content
-    if is_left_aligned then
+    if self.align == "left" then
         self.label_container = LeftContainer:new{
             dimen = Geom:new{
-                w = self.width - 4 * Size.padding.large,
-                h = widget_size.h
+                w = inner_width,
+                h = label_container_height,
             },
             self.label_widget,
         }
     else
         self.label_container = CenterContainer:new{
             dimen = Geom:new{
-                w = self.width,
-                h = widget_size.h
+                w = inner_width,
+                h = label_container_height,
             },
             self.label_widget,
         }
@@ -207,6 +232,12 @@ function Button:init()
     }
 end
 
+function Button:getMinNeededWidth()
+    if self._min_needed_width and self._min_needed_width < self.width then
+        return self._min_needed_width
+    end
+end
+
 function Button:setText(text, width)
     if text ~= self.text then
         -- Don't trash the frame if we're already a text button, and we're keeping the geometry intact
@@ -247,6 +278,9 @@ function Button:enable()
     if not self.enabled then
         if self.text then
             self.label_widget.fgcolor = Blitbuffer.COLOR_BLACK
+            if self.label_widget.update then -- using a TextBoxWidget
+                self.label_widget:update() -- needed to redraw with the new color
+            end
         else
             self.label_widget.dim = false
         end
@@ -258,6 +292,9 @@ function Button:disable()
     if self.enabled then
         if self.text then
             self.label_widget.fgcolor = Blitbuffer.COLOR_DARK_GRAY
+            if self.label_widget.update then
+                self.label_widget:update()
+            end
         else
             self.label_widget.dim = true
         end
@@ -282,6 +319,14 @@ function Button:enableDisable(enable)
     else
         self:disable()
     end
+end
+
+function Button:paintTo(bb, x, y)
+    if self.enabled_func then
+        -- state may change because of outside factors, so check it on each painting
+        self:enableDisable(self.enabled_func())
+    end
+    InputContainer.paintTo(self, bb, x, y)
 end
 
 function Button:hide()
@@ -446,7 +491,7 @@ function Button:refresh()
     -- e.g., right after a setText or setIcon is a no-go, as those kill the frame.
     --       (Although, setText, if called with the current width, will conserve the frame).
     if not self[1].dimen then
-        logger.dbg("Button:", self, "attempted a repaint in an unpainted frame!")
+        logger.dbg("Button:", tostring(self), "attempted a repaint in an unpainted frame!")
         return
     end
     UIManager:widgetRepaint(self[1], self[1].dimen.x, self.dimen.y)

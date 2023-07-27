@@ -361,6 +361,8 @@ function ReaderHighlight:addToMainMenu(menu_items)
             end,
         }
     end
+
+    -- main menu Typeset
     menu_items.highlight_options = {
         text = _("Highlight style"),
         sub_item_table = {},
@@ -466,8 +468,8 @@ function ReaderHighlight:addToMainMenu(menu_items)
             sub_item_table = self:genPanelZoomMenu(),
         }
     end
-    menu_items.translation_settings = Translator:genSettingsMenu()
 
+    -- main menu Settings
     menu_items.long_press = {
         text = _("Long-press on text"),
         sub_item_table = {
@@ -533,6 +535,15 @@ function ReaderHighlight:addToMainMenu(menu_items)
         menu_items.selection_text = util.tableDeepCopy(menu_items.long_press)
         menu_items.selection_text.text = _("Select on text")
     end
+
+    -- main menu Search
+    menu_items.translation_settings = Translator:genSettingsMenu()
+    menu_items.translate_current_page = {
+        text = _("Translate current page"),
+        callback = function()
+            self:onTranslateCurrentPage()
+        end,
+    }
 end
 
 function ReaderHighlight:genPanelZoomMenu()
@@ -618,7 +629,7 @@ function ReaderHighlight:onTapSelectModeIcon()
     if not self.select_mode then return end
     UIManager:show(ConfirmBox:new{
         text = _("You are currently in SELECT mode.\nTo finish highlighting, long press where the highlight should end and press the HIGHLIGHT button.\nYou can also exit select mode by tapping on the start of the highlight."),
-        icon = "format-quote-close",
+        icon = "texture-box",
         ok_text = _("Exit select mode"),
         cancel_text = _("Close"),
         ok_callback = function()
@@ -648,6 +659,7 @@ end
 function ReaderHighlight:onTapPageSavedHighlight(ges)
     local pages = self.view:getCurrentPageList()
     local pos = self.view:screenToPageTransform(ges.pos)
+    local highlights_tapped = {}
     for _, page in ipairs(pages) do
         local items = self.view:getPageSavedHighlights(page)
         if items then
@@ -663,12 +675,25 @@ function ReaderHighlight:onTapPageSavedHighlight(ges)
                             else
                                 hl_page, hl_i = page, i
                             end
-                            return self:onShowHighlightNoteOrDialog(hl_page, hl_i)
+                            if self.select_mode then
+                                if hl_page == self.highlight_page and hl_i == self.highlight_idx then
+                                    -- tap on the first fragment: abort select mode, clear highlight
+                                    self.select_mode = false
+                                    self:deleteHighlight(hl_page, hl_i)
+                                    return true
+                                end
+                            else
+                                table.insert(highlights_tapped, {hl_page, hl_i})
+                                break
+                            end
                         end
                     end
                 end
             end
         end
+    end
+    if #highlights_tapped > 0 then
+        return self:showChooseHighlightDialog(highlights_tapped)
     end
 end
 
@@ -686,6 +711,7 @@ function ReaderHighlight:onTapXPointerSavedHighlight(ges)
     --       because pos.page isn't super accurate in continuous mode
     --       (it's the page number for what's it the topleft corner of the screen,
     --       i.e., often a bit earlier)...
+    local highlights_tapped = {}
     for page, items in pairs(self.view.highlight.saved) do
         if items then
             for i = 1, #items do
@@ -714,13 +740,26 @@ function ReaderHighlight:onTapXPointerSavedHighlight(ges)
                         for index, box in pairs(boxes) do
                             if inside_box(pos, box) then
                                 logger.dbg("Tap on highlight")
-                                return self:onShowHighlightNoteOrDialog(page, i)
+                                if self.select_mode then
+                                    if page == self.highlight_page and i == self.highlight_idx then
+                                        -- tap on the first fragment: abort select mode, clear highlight
+                                        self.select_mode = false
+                                        self:deleteHighlight(page, i)
+                                        return true
+                                    end
+                                else
+                                    table.insert(highlights_tapped, {page, i})
+                                    break
+                                end
                             end
                         end
                     end
                 end
             end
         end
+    end
+    if #highlights_tapped > 0 then
+        return self:showChooseHighlightDialog(highlights_tapped)
     end
 end
 
@@ -809,16 +848,42 @@ function ReaderHighlight:updateHighlight(page, index, side, direction, move_by_c
     UIManager:setDirty(self.dialog, "ui")
 end
 
-function ReaderHighlight:onShowHighlightNoteOrDialog(page, index)
-    if self.select_mode then
-        if page ~= self.highlight_page or index ~= self.highlight_idx then return end
-        -- tap on the first fragment: abort select mode, clear highlight
-        self.select_mode = false
-        self:deleteHighlight(page, index)
-        return true
+function ReaderHighlight:showChooseHighlightDialog(highlights)
+    if #highlights == 1 then
+        local page, index = unpack(highlights[1])
+        local item = self.view.highlight.saved[page][index]
+        local bookmark_note = self.ui.bookmark:getBookmarkNote({datetime = item.datetime})
+        self:showHighlightNoteOrDialog(page, index, bookmark_note)
+    else -- overlapped highlights
+        local dialog
+        local buttons = {}
+        for i, v in ipairs(highlights) do
+            local page, index = unpack(v)
+            local item = self.view.highlight.saved[page][index]
+            local bookmark_note = self.ui.bookmark:getBookmarkNote({datetime = item.datetime})
+            buttons[i] = {{
+                text = (bookmark_note and self.ui.bookmark.display_prefix["note"]
+                                       or self.ui.bookmark.display_prefix["highlight"]) .. item.text,
+                align = "left",
+                avoid_text_truncation = false,
+                font_face = "smallinfofont",
+                font_size = 22,
+                font_bold = false,
+                callback = function()
+                    UIManager:close(dialog)
+                    self:showHighlightNoteOrDialog(page, index, bookmark_note)
+                end,
+            }}
+        end
+        dialog = ButtonDialog:new{
+            buttons = buttons,
+        }
+        UIManager:show(dialog)
     end
-    local item = self.view.highlight.saved[page][index]
-    local bookmark_note = self.ui.bookmark:getBookmarkNote({datetime = item.datetime})
+    return true
+end
+
+function ReaderHighlight:showHighlightNoteOrDialog(page, index, bookmark_note)
     if bookmark_note then
         local textviewer
         textviewer = TextViewer:new{
@@ -849,7 +914,6 @@ function ReaderHighlight:onShowHighlightNoteOrDialog(page, index)
     else
         self:onShowHighlightDialog(page, index, true)
     end
-    return true
 end
 
 function ReaderHighlight:onShowHighlightDialog(page, index, is_auto_text)
@@ -1337,128 +1401,8 @@ end
 function ReaderHighlight:viewSelectionHTML(debug_view, no_css_files_buttons)
     if self.ui.paging then return end
     if self.selected_text and self.selected_text.pos0 and self.selected_text.pos1 then
-        -- For available flags, see the "#define WRITENODEEX_*" in crengine/src/lvtinydom.cpp
-        -- Start with valid and classic displayed HTML (with only block nodes indented),
-        -- including styles found in <HEAD>, linked CSS files content, and misc info.
-        local html_flags = 0x6830
-        if not debug_view then
-            debug_view = 0
-        end
-        if debug_view == 1 then
-            -- Each node on a line, with markers and numbers of skipped chars and siblings shown,
-            -- with possibly invalid HTML (text nodes not escaped)
-            html_flags = 0x6B5A
-        elseif debug_view == 2 then
-            -- Additionally see rendering methods of each node
-            html_flags = 0x6F5A
-        elseif debug_view == 3 then
-            -- Or additionally see unicode codepoint of each char
-            html_flags = 0x6B5E
-        end
-        local html, css_files = self.ui.document:getHTMLFromXPointers(self.selected_text.pos0,
-                                    self.selected_text.pos1, html_flags, true)
-        if html then
-            -- Make some invisible chars visible
-            if debug_view >= 1 then
-                html = html:gsub("\xC2\xA0", "␣")  -- no break space: open box
-                html = html:gsub("\xC2\xAD", "⋅") -- soft hyphen: dot operator (smaller than middle dot ·)
-                -- Prettify inlined CSS (from <HEAD>, put in an internal
-                -- <body><stylesheet> element by crengine (the opening tag may
-                -- include some href=, or end with " ~X>" with some html_flags)
-                -- (We do that in debug_view mode only: as this may increase
-                -- the height of this section, we don't want to have to scroll
-                -- many pages to get to the HTML content on the initial view.)
-                html = html:gsub("(<stylesheet[^>]*>)%s*(.-)%s*(</stylesheet>)", function(pre, css_text, post)
-                    return pre .. "\n" .. util.prettifyCSS(css_text) .. post
-                end)
-            end
-            local Font = require("ui/font")
-            local textviewer
-            local buttons_hold_callback = function()
-                -- Allow hiding css files buttons if there are too many
-                -- and the available height for text is too short
-                UIManager:close(textviewer)
-                self:viewSelectionHTML(debug_view, not no_css_files_buttons)
-            end
-            local buttons_table = {}
-            if css_files and not no_css_files_buttons then
-                for i=1, #css_files do
-                    local button = {
-                        text = T(_("View %1"), BD.filepath(css_files[i])),
-                        callback = function()
-                            local css_text = self.ui.document:getDocumentFileContent(css_files[i])
-                            local cssviewer
-                            cssviewer = TextViewer:new{
-                                title = css_files[i],
-                                text = css_text or _("Failed getting CSS content"),
-                                text_face = Font:getFace("smallinfont"),
-                                justified = false,
-                                para_direction_rtl = false,
-                                auto_para_direction = false,
-                                add_default_buttons = true,
-                                buttons_table = {
-                                    {{
-                                        text = _("Prettify"),
-                                        enabled = css_text and true or false,
-                                        callback = function()
-                                            UIManager:close(cssviewer)
-                                            UIManager:show(TextViewer:new{
-                                                title = css_files[i],
-                                                text = util.prettifyCSS(css_text),
-                                                text_face = Font:getFace("smallinfont"),
-                                                justified = false,
-                                                para_direction_rtl = false,
-                                                auto_para_direction = false,
-                                            })
-                                        end,
-                                    }},
-                                }
-                            }
-                            UIManager:show(cssviewer)
-                        end,
-                        hold_callback = buttons_hold_callback,
-                    }
-                    -- One button per row, to make room for the possibly long css filename
-                    table.insert(buttons_table, {button})
-                end
-            end
-            local next_debug_text
-            local next_debug_view = debug_view + 1
-            if next_debug_view == 1 then
-                next_debug_text = _("Switch to debug view")
-            elseif next_debug_view == 2 then
-                next_debug_text = _("Switch to rendering debug view")
-            elseif next_debug_view == 3 then
-                next_debug_text = _("Switch to unicode debug view")
-            else
-                next_debug_view = 0
-                next_debug_text = _("Switch to standard view")
-            end
-            table.insert(buttons_table, {{
-                text = next_debug_text,
-                callback = function()
-                    UIManager:close(textviewer)
-                    self:viewSelectionHTML(next_debug_view, no_css_files_buttons)
-                end,
-                hold_callback = buttons_hold_callback,
-            }})
-            textviewer = TextViewer:new{
-                title = _("Selection HTML"),
-                text = html,
-                text_face = Font:getFace("smallinfont"),
-                justified = false,
-                para_direction_rtl = false,
-                auto_para_direction = false,
-                add_default_buttons = true,
-                default_hold_callback = buttons_hold_callback,
-                buttons_table = buttons_table,
-            }
-            UIManager:show(textviewer)
-        else
-            UIManager:show(InfoMessage:new{
-                text = _("Failed getting HTML for selection"),
-            })
-        end
+        local ViewHtml = require("ui/viewhtml")
+        ViewHtml:viewSelectionHTML(self.ui.document, self.selected_text)
     end
 end
 
@@ -1492,8 +1436,45 @@ dbg:guard(ReaderHighlight, "translate",
             "translate must not be called with nil selected_text!")
     end)
 
+function ReaderHighlight:getDocumentLanguage()
+    local doc_props = self.ui.doc_settings:readSetting("doc_props")
+    local doc_lang = doc_props and doc_props.language
+    if doc_lang == "" then
+        doc_lang = nil
+    end
+    return doc_lang
+end
+
 function ReaderHighlight:onTranslateText(text, page, index)
-    Translator:showTranslation(text, false, false, true, page, index)
+    Translator:showTranslation(text, true, nil, nil, true, page, index)
+end
+
+function ReaderHighlight:onTranslateCurrentPage()
+    local x0, y0, x1, y1, page, is_reflow
+    if self.ui.rolling then
+        x0 = 0
+        y0 = 0
+        x1 = Screen:getWidth()
+        y1 = Screen:getHeight()
+    else
+        page = self.ui:getCurrentPage()
+        is_reflow = self.ui.document.configurable.text_wrap
+        self.ui.document.configurable.text_wrap = 0
+        local page_boxes = self.ui.document:getTextBoxes(page)
+        if page_boxes and page_boxes[1][1].word then
+            x0 = page_boxes[1][1].x0
+            y0 = page_boxes[1][1].y0
+            x1 = page_boxes[#page_boxes][#page_boxes[#page_boxes]].x1
+            y1 = page_boxes[#page_boxes][#page_boxes[#page_boxes]].y1
+        end
+    end
+    local res = x0 and self.ui.document:getTextFromPositions({x = x0, y = y0, page = page}, {x = x1, y = y1}, true)
+    if self.ui.paging then
+        self.ui.document.configurable.text_wrap = is_reflow
+    end
+    if res and res.text then
+        Translator:showTranslation(res.text, false, self:getDocumentLanguage())
+    end
 end
 
 function ReaderHighlight:onHoldRelease()
@@ -1883,37 +1864,52 @@ end
 
 function ReaderHighlight:editHighlightStyle(page, i)
     local item = self.view.highlight.saved[page][i]
-    local radio_buttons = {}
-    for _, v in ipairs(highlight_style) do
-        table.insert(radio_buttons, {
-            {
-                text = v[1],
-                checked = item.drawer == v[2],
-                provider = v[2],
-            },
-        })
-    end
-    UIManager:show(require("ui/widget/radiobuttonwidget"):new{
-        title_text = _("Highlight style"),
-        width_factor = 0.5,
-        keep_shown_on_apply = true,
-        radio_buttons = radio_buttons,
-        default_provider = self.view.highlight.saved_drawer or
-            G_reader_settings:readSetting("highlight_drawing_style", "lighten"),
-        callback = function(radio)
-            self:writePdfAnnotation("delete", page, item)
-            item.drawer = radio.provider
+    local apply_drawer = function(drawer)
+        self:writePdfAnnotation("delete", page, item)
+        item.drawer = drawer
+        if self.ui.paging then
             self:writePdfAnnotation("save", page, item)
             local bm_note = self.ui.bookmark:getBookmarkNote(item)
             if bm_note then
                 self:writePdfAnnotation("content", page, item, bm_note)
             end
-            UIManager:setDirty(self.dialog, "ui")
-            self.ui:handleEvent(Event:new("BookmarkUpdated",
-                    self.ui.bookmark:getBookmarkForHighlight({
-                        page = self.ui.paging and page or item.pos0,
-                        datetime = item.datetime,
-                    })))
+        end
+        UIManager:setDirty(self.dialog, "ui")
+        self.ui:handleEvent(Event:new("BookmarkUpdated",
+                self.ui.bookmark:getBookmarkForHighlight({
+                    page = self.ui.paging and page or item.pos0,
+                    datetime = item.datetime,
+                })))
+    end
+    self:showHighlightStyleDialog(apply_drawer, item.drawer)
+end
+
+function ReaderHighlight:showHighlightStyleDialog(caller_callback, item_drawer)
+    local default_drawer, keep_shown_on_apply
+    if item_drawer then -- called from editHighlightStyle
+        default_drawer = self.view.highlight.saved_drawer or
+            G_reader_settings:readSetting("highlight_drawing_style", "lighten")
+        keep_shown_on_apply = true
+    end
+    local radio_buttons = {}
+    for _, v in ipairs(highlight_style) do
+        table.insert(radio_buttons, {
+            {
+                text = v[1],
+                checked = item_drawer == v[2],
+                provider = v[2],
+            },
+        })
+    end
+    local RadioButtonWidget = require("ui/widget/radiobuttonwidget")
+    UIManager:show(RadioButtonWidget:new{
+        title_text = _("Highlight style"),
+        width_factor = 0.5,
+        keep_shown_on_apply = keep_shown_on_apply,
+        radio_buttons = radio_buttons,
+        default_provider = default_drawer,
+        callback = function(radio)
+            caller_callback(radio.provider)
         end,
     })
 end

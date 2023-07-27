@@ -233,6 +233,22 @@ function CreDocument:setupDefaultView()
     self._document:setIntProperty("crengine.image.scaling.zoomout.inline.mode", 0)
     self._document:setIntProperty("crengine.image.scaling.zoomout.inline.scale", 1)
 
+    -- crengine won't create a cache for small documents, which could actually
+    -- makes re-opening small files slower than big files!
+    -- Also, we need a cache for ReaderRolling's partial rerenderings handling.
+    -- In crengine code:
+    -- A cache is created if the file size is larger than:
+    --   crengine.cache.filesize.min = PROP_MIN_FILE_SIZE_TO_CACHE: default 300000
+    --   (fallback: DOCUMENT_CACHING_SIZE_THRESHOLD=1048576)
+    -- A cache is searched for (to be used) only if the file size is larger than 65535:
+    --   hardcoded not overridable: DOCUMENT_CACHING_MIN_SIZE=65535
+    -- Other related variables:
+    --   PROP_FORCED_MIN_FILE_SIZE_TO_CACHE: not used (a hardcoded value of 30000 is used instead)
+    --     (if filesize < 30000: swapToCache simulated but not really done)
+    --   DOCUMENT_CACHING_MAX_RAM_USAGE 8388608: not used
+    -- Force having a cache with small documents (but at least > 65K)
+    self._document:setIntProperty("crengine.cache.filesize.min", 65536)
+
     -- If switching to two pages on view, we want it to behave like two columns
     -- and each view to be a single page number (instead of the default of two).
     -- This ensures that page number and count are consistent between top and
@@ -306,9 +322,9 @@ function CreDocument:render()
     logger.dbg("CreDocument: rendering done.")
 end
 
-function CreDocument:getDocumentRenderingHash()
+function CreDocument:getDocumentRenderingHash(extended)
     if self.been_rendered then
-        return self._document:getDocumentRenderingHash()
+        return self._document:getDocumentRenderingHash(extended)
     end
     return 0
 end
@@ -656,8 +672,13 @@ function CreDocument:getWordFromPosition(pos)
     ]]--
 end
 
-function CreDocument:getTextFromPositions(pos0, pos1)
-    local text_range = self._document:getTextFromPositions(pos0.x, pos0.y, pos1.x, pos1.y)
+function CreDocument:getTextFromPositions(pos0, pos1, do_not_draw_selection)
+    local drawSelection, drawSegmentedSelection
+    if do_not_draw_selection then
+        drawSelection, drawSegmentedSelection = false, false
+    end
+    local text_range = self._document:getTextFromPositions(pos0.x, pos0.y, pos1.x, pos1.y,
+        drawSelection, drawSegmentedSelection)
     logger.dbg("CreDocument: get text range", text_range)
     if text_range then
         -- local line_boxes = self:getScreenBoxesFromPositions(text_range.pos0, text_range.pos1)
@@ -815,6 +836,10 @@ function CreDocument:getXPointer()
     return self._document:getXPointer()
 end
 
+function CreDocument:getPageXPointer(page)
+    return self._document:getPageXPointer(page)
+end
+
 function CreDocument:isXPointerInDocument(xp)
     return self._document:isXPointerInDocument(xp)
 end
@@ -919,6 +944,10 @@ function CreDocument:getHTMLFromXPointers(xp0, xp1, flags, from_root_node)
     if xp0 and xp1 then
         return self._document:getHTMLFromXPointers(xp0, xp1, flags, from_root_node)
     end
+end
+
+function CreDocument:getStylesheetsMatchingRulesets(node_dataindex, with_main_stylesheet)
+    return self._document:getStylesheetsMatchingRulesets(node_dataindex, with_main_stylesheet)
 end
 
 function CreDocument:getNormalizedXPointer(xp)
@@ -1374,12 +1403,36 @@ function CreDocument:setCallback(func)
     return self._document:setCallback(func)
 end
 
+function CreDocument:canBePartiallyRerendered()
+    return self._document:canBePartiallyRerendered()
+end
+
+function CreDocument:isPartialRerenderingEnabled()
+    return self._document:isPartialRerenderingEnabled()
+end
+
+function CreDocument:enablePartialRerendering(enable)
+    return self._document:enablePartialRerendering(enable)
+end
+
+function CreDocument:getPartialRerenderingsCount()
+    return self._document:getPartialRerenderingsCount()
+end
+
+function CreDocument:isRerenderingDelayed()
+    return self._document:isRerenderingDelayed()
+end
+
 function CreDocument:isBuiltDomStale()
     return self._document:isBuiltDomStale()
 end
 
 function CreDocument:hasCacheFile()
     return self._document:hasCacheFile()
+end
+
+function CreDocument:isCacheFileStale()
+    return self._document:isCacheFileStale()
 end
 
 function CreDocument:invalidateCacheFile()
@@ -1456,7 +1509,9 @@ function CreDocument:register(registry)
     registry:addProvider("chm", "application/vnd.ms-htmlhelp", self, 90)
     registry:addProvider("doc", "application/msword", self, 90)
     registry:addProvider("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", self, 90)
+    registry:addProvider("docm", "application/vnd.ms-word.document.macroEnabled.12", self, 90)
     registry:addProvider("epub", "application/epub+zip", self, 100)
+    registry:addProvider("epub", "application/epub", self, 100) -- Alternative mimetype for OPDS.
     registry:addProvider("epub3", "application/epub+zip", self, 100)
     registry:addProvider("fb2", "application/fb2", self, 90)
     registry:addProvider("fb2", "text/fb2+xml", self, 90) -- Alternative mimetype for OPDS.
@@ -1778,6 +1833,8 @@ function CreDocument:setupCallCache()
             elseif name == "getPageFlow" then no_wrap = true
             elseif name == "getPageNumberInFlow" then no_wrap = true
             elseif name == "getTotalPagesLeft" then no_wrap = true
+            elseif name == "getDocumentRenderingHash" then no_wrap = true
+            elseif name == "getPartialRerenderingsCount" then no_wrap = true
 
             -- Some get* have different results by page/pos
             elseif name == "getLinkFromPosition" then cache_by_tag = true

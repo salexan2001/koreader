@@ -170,7 +170,7 @@ function TouchMenuItem:onTapSelect(arg, ges)
     if self.item.enabled_func then
         enabled = self.item.enabled_func()
     end
-    if enabled == false then return end
+    if enabled == false then return true end -- don't propagate
 
     local tap_on_checkmark = false
     if ges and ges.pos and ges.pos.x then
@@ -182,7 +182,7 @@ function TouchMenuItem:onTapSelect(arg, ges)
     end
 
     -- If the menu hasn't actually been drawn yet, don't do anything (as it's confusing, and the coordinates may be wrong).
-    if not self.item_frame.dimen then return end
+    if not self.item_frame.dimen then return true end
 
     if G_reader_settings:isFalse("flash_ui") then
         self.menu:onMenuSelect(self.item, tap_on_checkmark)
@@ -225,9 +225,21 @@ function TouchMenuItem:onHoldSelect(arg, ges)
     if self.item.enabled_func then
         enabled = self.item.enabled_func()
     end
-    if enabled == false then return end
+    if enabled == false then
+        -- Allow help_text to be displayed even if menu item disabled
+        if self.item.help_text or type(self.item.help_text_func) == "function" then
+            local help_text = self.item.help_text
+            if self.item.help_text_func then
+                help_text = self.item.help_text_func(self)
+            end
+            if help_text then
+                UIManager:show(InfoMessage:new{ text = help_text, })
+            end
+        end
+        return true -- don't propagate
+    end
 
-    if not self.item_frame.dimen then return end
+    if not self.item_frame.dimen then return true end
 
     if G_reader_settings:isFalse("flash_ui") then
         self.menu:onMenuHold(self.item, self.text_truncated)
@@ -557,7 +569,7 @@ function TouchMenu:init()
         text_font_bold = false,
         callback = function()
             UIManager:show(InfoMessage:new{
-                text = datetime.secondsToDateTime(os.time(), G_reader_settings:isTrue("twelve_hour_clock"), true),
+                text = datetime.secondsToDateTime(nil, nil, true),
             })
         end,
         hold_callback = function()
@@ -637,8 +649,8 @@ function TouchMenu:onCloseWidget()
     -- Don't do anything when we're switching between the two, or if we don't actually have a live instance of 'em...
     local FileManager = require("apps/filemanager/filemanager")
     local ReaderUI = require("apps/reader/readerui")
-    local reader_ui = ReaderUI:_getRunningInstance()
-    if (FileManager.instance and not FileManager.instance.tearing_down) or (reader_ui and not reader_ui.tearing_down) then
+    if (FileManager.instance and not FileManager.instance.tearing_down)
+            or (ReaderUI.instance and not ReaderUI.instance.tearing_down) then
         UIManager:setDirty(nil, "flashui")
     end
 end
@@ -786,6 +798,11 @@ end
 function TouchMenu:backToUpperMenu(no_close)
     if #self.item_table_stack ~= 0 then
         self.item_table = table.remove(self.item_table_stack)
+        -- Allow a menu table to refresh itself when going up (ie. from a setting
+        -- submenu that may want to have its parent menu updated).
+        if self.item_table.needs_refresh and self.item_table.refresh_func then
+            self.item_table = self.item_table.refresh_func()
+        end
         self.page = 1
         if self.parent_id then
             self:_recalculatePageLayout() -- we need an accurate self.perpage

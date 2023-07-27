@@ -224,6 +224,8 @@ function ReaderProgress:genWeekStats(stats_day)
         },
     }
 
+    -- Lines have L/R self.padding. Make this section even more indented/padded inside the lines
+    local inner_width = self.screen_width - 4*self.padding
     local j = 1
     for i = 1, stats_day do
         diff_time = now_time - second_in_day * (i - 1)
@@ -236,9 +238,8 @@ function ReaderProgress:genWeekStats(stats_day)
         date_format_show = datetime.shortDayOfWeekToLongTranslation[os.date("%a", diff_time)] .. os.date(" (%Y-%m-%d)", diff_time)
         local total_group = HorizontalGroup:new{
             align = "center",
-            padding = Size.padding.small,
             LeftContainer:new{
-                dimen = Geom:new{ w = self.screen_width , h = height * (1/3) },
+                dimen = Geom:new{ w = inner_width , h = height * (1/3) },
                 TextWidget:new{
                     padding = Size.padding.small,
                     text = date_format_show .. " — " .. datetime.secondsToClockDuration(user_duration_format, select_day_time, true, true),
@@ -249,9 +250,9 @@ function ReaderProgress:genWeekStats(stats_day)
         local titles_group = HorizontalGroup:new{
             align = "center",
             LeftContainer:new{
-                dimen = Geom:new{ w = self.screen_width , h = height * (1/3) },
+                dimen = Geom:new{ w = inner_width , h = height * (1/3) },
                 ProgressWidget:new{
-                    width = math.floor((self.screen_width * 0.005) + (self.screen_width * 0.9 * select_day_time / max_week_time)),
+                    width = math.floor(inner_width * select_day_time / max_week_time),
                     height = Screen:scaleBySize(14),
                     percentage = 1.0,
                     ticks = nil,
@@ -267,7 +268,7 @@ function ReaderProgress:genWeekStats(stats_day)
     end  --for i=1
     table.insert(statistics_container, statistics_group)
     return CenterContainer:new{
-        dimen = Geom:new{ w = math.floor(self.screen_width * 1.1), h = math.floor(self.screen_height * 0.5) },
+        dimen = Geom:new{ w = self.screen_width, h = math.floor(self.screen_height * 0.5) },
         statistics_container,
     }
 end
@@ -335,7 +336,7 @@ function ReaderProgress:genSummaryDay(width)
         CenterContainer:new{
             dimen = Geom:new{ w = tile_width, h = tile_height },
             TextWidget:new{
-                text = datetime.secondsToClockDuration(user_duration_format, self.current_duration, true, true),
+                text = datetime.secondsToClockDuration(user_duration_format, self.current_duration, true),
                 face = self.medium_font_face,
             },
         },
@@ -349,7 +350,7 @@ function ReaderProgress:genSummaryDay(width)
         CenterContainer:new{
             dimen = Geom:new{ w = tile_width, h = tile_height },
             TextWidget:new{
-                text = datetime.secondsToClockDuration(user_duration_format, self.today_duration, true, true),
+                text = datetime.secondsToClockDuration(user_duration_format, self.today_duration, true),
                 face = self.medium_font_face,
             },
         },
@@ -437,7 +438,7 @@ function ReaderProgress:genSummaryWeek(width)
         CenterContainer:new{
             dimen = Geom:new{ w = tile_width, h = tile_height },
             TextWidget:new{
-                text = datetime.secondsToClockDuration(user_duration_format, math.floor(total_time), true, true),
+                text = datetime.secondsToClockDuration(user_duration_format, math.floor(total_time), true),
                 face = self.medium_font_face,
             },
         },
@@ -451,7 +452,7 @@ function ReaderProgress:genSummaryWeek(width)
         CenterContainer:new{
             dimen = Geom:new{ w = tile_width, h = tile_height },
             TextWidget:new{
-                text = datetime.secondsToClockDuration(user_duration_format, math.floor(total_time) * (1/7), true, true),
+                text = datetime.secondsToClockDuration(user_duration_format, math.floor(total_time) * (1/7), true),
                 face = self.medium_font_face,
             }
         }

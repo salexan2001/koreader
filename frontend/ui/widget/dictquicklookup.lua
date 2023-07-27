@@ -1,5 +1,6 @@
 local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
+local ButtonDialog = require("ui/widget/buttondialog")
 local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
@@ -215,7 +216,23 @@ function DictQuickLookup:init()
         -- visual hint: title left aligned for dict, centered for Wikipedia
         align = self.is_wiki and "center" or "left",
         show_parent = self,
+        lang = self.lang_out,
+        left_icon = "appbar.menu",
+        left_icon_tap_callback = function()
+            if self.is_wiki then
+                self:showWikiResultsMenu()
+            else
+                self:showResultsMenu()
+            end
+        end,
+        left_icon_hold_callback = not self.is_wiki and function() self:showResultsAltMenu() end or nil,
     }
+    -- Scrollable offsets of the various showResults* menus and submenus,
+    -- so we can reopen them in the same state they were when closed.
+    self.menu_scrolled_offsets = {}
+    -- We'll also need to close any opened such menu when closing this DictQuickLookup
+    -- (needed if closing all DictQuickLookups via long-press on Close on the top one)
+    self.menu_opened = {}
 
     -- This padding and the resulting width apply to the content
     -- below the title:  lookup word and definition
@@ -294,6 +311,7 @@ function DictQuickLookup:init()
         bold = true,
         max_width = self.content_width - math.max(lookup_edit_button_w, lookup_word_nb_w),
         padding = 0, -- to be aligned with lookup_word_nb
+        lang = self.lang_in
     }
     -- Group these 3 widgets
     local lookup_word = OverlapGroup:new{
@@ -712,10 +730,6 @@ function DictQuickLookup:init()
 
     -- We're a new window
     table.insert(DictQuickLookup.window_list, self)
-
-    UIManager:setDirty(self, function()
-        return "partial", self.dict_frame.dimen
-    end)
 end
 
 -- Whether currently DictQuickLookup is working without a document.
@@ -799,7 +813,7 @@ function DictQuickLookup:_instantiateScrollWidget()
             height = self.definition_height,
             dialog = self,
             justified = G_reader_settings:nilOrTrue("dict_justify"), -- allow for disabling justification
-            lang = self.lang and self.lang:lower(), -- only available on wikipedia results
+            lang = self.lang and self.lang:lower() or self.lang_out,
             para_direction_rtl = self.rtl_lang,     -- only available on wikipedia results
             auto_para_direction = not self.is_wiki, -- only for dict results (we don't know their lang)
             image_alt_face = self.image_alt_face,
@@ -821,6 +835,7 @@ function DictQuickLookup:update()
         self.displaynb_text:setText(self.displaynb)
     end
     self.lookup_word_text:setText(self.displayword)
+    self.lookup_word_text.lang = self.lang_in
 
     -- Update Buttons
     if not self.is_wiki_fullpage then
@@ -846,7 +861,7 @@ function DictQuickLookup:update()
         -- Update properties that may change across results (as done in DictQuickLookup:_instantiateScrollWidget())
         self.text_widget.text_widget.text = self.definition
         self.text_widget.text_widget.charlist = nil -- (required when use_xtext=false for proper re-init)
-        self.text_widget.text_widget.lang = self.lang and self.lang:lower()
+        self.text_widget.text_widget.lang = self.lang and self.lang:lower() or self.lang_out
         self.text_widget.text_widget.para_direction_rtl = self.rtl_lang
         self.text_widget.text_widget.images = self.images
         -- Scroll back to the top, àla TextBoxWidget:scrollToTop
@@ -999,6 +1014,9 @@ function DictQuickLookup:changeDictionary(index, skip_update)
     self.is_html = self.results[index].is_html
     self.css = self.results[index].css
     self.lang = self.results[index].lang
+    local ifo_lang = self.results[index].ifo_lang
+    self.lang_in = ifo_lang and ifo_lang.lang_in or nil
+    self.lang_out = ifo_lang and ifo_lang.lang_out or nil
     self.rtl_lang = self.results[index].rtl_lang
     self.images = self.results[index].images
     if self.images and #self.images > 0 then
@@ -1118,6 +1136,11 @@ function DictQuickLookup:onTap(arg, ges_ev)
 end
 
 function DictQuickLookup:onClose(no_clear)
+    for menu, _ in pairs(self.menu_opened) do
+        UIManager:close(menu)
+    end
+    self.menu_opened = {}
+
     UIManager:close(self)
 
     if self.update_wiki_languages_on_close then
@@ -1223,27 +1246,29 @@ function DictQuickLookup:lookupInputWord(hint)
     self.input_dialog = InputDialog:new{
         title = _("Enter a word or phrase to look up"),
         input = hint,
-        input_hint = hint or "",
-        input_type = "text",
+        input_hint = hint,
         buttons = {
             {
                 {
                     text = _("Translate"),
-                    is_enter_default = false,
                     callback = function()
-                        if self.input_dialog:getInputText() == "" then return end
-                        self:closeInputDialog()
-                        Translator:showTranslation(self.input_dialog:getInputText())
+                        local text = self.input_dialog:getInputText()
+                        if text ~= "" then
+                            UIManager:close(self.input_dialog)
+                            Translator:showTranslation(text, true)
+                        end
                     end,
                 },
                 {
                     text = _("Search Wikipedia"),
                     is_enter_default = self.is_wiki,
                     callback = function()
-                        if self.input_dialog:getInputText() == "" then return end
-                        self.is_wiki = true
-                        self:closeInputDialog()
-                        self:inputLookup()
+                        local text = self.input_dialog:getInputText()
+                        if text ~= "" then
+                            UIManager:close(self.input_dialog)
+                            self.is_wiki = true
+                            self:lookupWikipedia(false, text, true)
+                        end
                     end,
                 },
             },
@@ -1252,17 +1277,19 @@ function DictQuickLookup:lookupInputWord(hint)
                     text = _("Cancel"),
                     id = "close",
                     callback = function()
-                        self:closeInputDialog()
+                        UIManager:close(self.input_dialog)
                     end,
                 },
                 {
                     text = _("Search dictionary"),
                     is_enter_default = not self.is_wiki,
                     callback = function()
-                        if self.input_dialog:getInputText() == "" then return end
-                        self.is_wiki = false
-                        self:closeInputDialog()
-                        self:inputLookup()
+                        local text = self.input_dialog:getInputText()
+                        if text ~= "" then
+                            UIManager:close(self.input_dialog)
+                            self.is_wiki = false
+                            self.ui:handleEvent(Event:new("LookupWord", text, true))
+                        end
                     end,
                 },
             },
@@ -1270,22 +1297,6 @@ function DictQuickLookup:lookupInputWord(hint)
     }
     UIManager:show(self.input_dialog)
     self.input_dialog:onShowKeyboard()
-end
-
-function DictQuickLookup:inputLookup()
-    local word = self.input_dialog:getInputText()
-    if word and word ~= "" then
-        -- Trust that input text does not need any cleaning (allows querying for "-suffix")
-        if self.is_wiki then
-            self:lookupWikipedia(false, word, true)
-        else
-            self.ui:handleEvent(Event:new("LookupWord", word, true))
-        end
-    end
-end
-
-function DictQuickLookup:closeInputDialog()
-    UIManager:close(self.input_dialog)
 end
 
 function DictQuickLookup:lookupWikipedia(get_fullpage, word, is_sane, lang)
@@ -1314,6 +1325,249 @@ function DictQuickLookup:lookupWikipedia(get_fullpage, word, is_sane, lang)
     end
     -- Keep providing self.word_boxes so new windows keep being positionned to not hide it
     self.ui:handleEvent(Event:new("LookupWikipedia", word, is_sane, self.word_boxes, get_fullpage, lang))
+end
+
+function DictQuickLookup:showResultsMenu()
+    -- Show one row: "| word | dict |" for each result
+    local width = math.floor(self.width * 0.75)
+    local right_width = math.floor(width * 0.5)
+    local font_size = 18
+    local button_dialog
+    local buttons = {}
+    for idx, result in ipairs(self.results) do
+        -- Show in bold the currently displayed result
+        local bold = idx == self.dict_index
+        local row = {
+            {
+                text = result.word,
+                lang = result.ifo_lang and result.ifo_lang.lang_in or nil,
+                font_size = font_size,
+                font_bold = bold,
+                align = "left",
+                callback = function()
+                    self.menu_scrolled_offsets["main"] = button_dialog:getScrolledOffset()
+                    self.menu_opened[button_dialog] = nil
+                    UIManager:close(button_dialog)
+                    self:changeDictionary(idx)
+                end,
+                hold_callback = function()
+                    -- Allow doing another lookup with this result word
+                    self.ui:handleEvent(Event:new("LookupWord", result.word))
+                end,
+            },
+            {
+                text = result.dict,
+                lang = result.ifo_lang and result.ifo_lang.lang_out or nil,
+                font_size = font_size,
+                font_bold = bold,
+                width = right_width,
+                callback = function()
+                    self.menu_scrolled_offsets["main"] = button_dialog:getScrolledOffset()
+                    self.menu_opened[button_dialog] = nil
+                    UIManager:close(button_dialog)
+                    self:changeDictionary(idx)
+                end,
+            },
+        }
+        table.insert(buttons, row)
+    end
+    button_dialog = ButtonDialog:new{
+        width = width,
+        -- We don't provide shrink_unneeded_width=true as it's ugly with small words
+        buttons = buttons,
+        anchor = function()
+            return self.dict_title.left_button.image.dimen, true -- pop down
+        end,
+        tap_close_callback = function()
+            self.menu_scrolled_offsets["main"] = button_dialog:getScrolledOffset()
+            self.menu_opened[button_dialog] = nil
+        end
+    }
+    button_dialog:setScrolledOffset(self.menu_scrolled_offsets["main"])
+    self.menu_opened[button_dialog] = true
+    UIManager:show(button_dialog)
+end
+
+function DictQuickLookup:showResultsAltMenu()
+    -- Alternative listing with long-press:
+    -- Show one row: "| dict | word or N results |" for each dictionary returning results
+    local dicts = {}
+    local dict_results = {}
+    for idx, result in ipairs(self.results) do
+        local dict = result.dict
+        if not dict_results[dict] then
+            dict_results[dict] = { idx }
+            table.insert(dicts, dict)
+        else
+            table.insert(dict_results[dict], idx)
+        end
+    end
+    local max_width = math.floor(self.width * 0.75)
+    local right_width = math.floor(max_width * 0.25)
+    local font_size = 18
+    local button_dialog
+    local buttons = {}
+    for dictnum, dict in ipairs(dicts) do
+        local results = dict_results[dict]
+        local first_result = self.results[results[1]]
+        -- Show in bold only the currently displayed result's dict
+        local bold = util.arrayContains(results, self.dict_index)
+        local row = {{
+            text = dict,
+            lang = first_result.ifo_lang and first_result.ifo_lang.lang_out or nil,
+            font_size = font_size,
+            font_bold = bold,
+            align = "left",
+            callback = function()
+                self.menu_scrolled_offsets["alt"] = button_dialog:getScrolledOffset()
+                self.menu_opened[button_dialog] = nil
+                UIManager:close(button_dialog)
+                self:changeDictionary(results[1])
+            end,
+        }}
+        -- Right button
+        local button_id = "button"..dictnum
+        local text, lang, avoid_text_truncation, is_single_result, hold_callback
+        if #results == 1 then
+            -- Show the headword, possibly truncated (otherwise, long words
+            -- would get displayed in a really small font size).
+            -- If truncated, we'll show it full in a popup
+            text = first_result.word
+            lang = first_result.ifo_lang and first_result.ifo_lang.lang_in or nil
+            avoid_text_truncation = false
+            is_single_result = true
+            hold_callback = function()
+                -- Allow doing another lookup with this result word
+                self.ui:handleEvent(Event:new("LookupWord", first_result.word))
+            end
+        else
+            text = T(_("%1 results"), #results)
+        end
+        local callback = function()
+            local source_button = button_dialog:getButtonById(button_id)
+            if is_single_result and not source_button.label_widget:isTruncated() then
+                -- Not truncated: jump directly to the result
+                self.menu_scrolled_offsets["alt"] = button_dialog:getScrolledOffset()
+                self.menu_opened[button_dialog] = nil
+                UIManager:close(button_dialog)
+                self:changeDictionary(results[1])
+                return
+            end
+            local button_dialog2
+            local buttons2 = {}
+            local lang2 = first_result.ifo_lang and first_result.ifo_lang.lang_in or nil -- same for all results
+            for res=1, #results do
+                table.insert(buttons2, {{
+                    text = self.results[results[res]].word,
+                    lang = lang2,
+                    font_size = font_size,
+                    font_bold = results[res] == self.dict_index,
+                    callback = function()
+                        self.menu_scrolled_offsets["alt_sub"..dictnum] = button_dialog2:getScrolledOffset()
+                        self.menu_opened[button_dialog2] = nil
+                        UIManager:close(button_dialog2)
+                        self.menu_scrolled_offsets["alt"] = button_dialog:getScrolledOffset()
+                        self.menu_opened[button_dialog] = nil
+                        UIManager:close(button_dialog)
+                        self:changeDictionary(results[res])
+                    end,
+                    hold_callback = function()
+                        -- Allow doing another lookup with this result word
+                        self.ui:handleEvent(Event:new("LookupWord", self.results[results[res]].word))
+                    end,
+                }})
+            end
+            button_dialog2 = ButtonDialog:new{
+                width = right_width*2, -- larger, to have room for long words
+                buttons = buttons2,
+                anchor = function()
+                    return source_button.dimen, true -- pop down
+                end,
+                tap_close_callback = function()
+                    self.menu_scrolled_offsets["alt_sub"..dictnum] = button_dialog2:getScrolledOffset()
+                    self.menu_opened[button_dialog2] = nil
+                end
+            }
+            button_dialog2:setScrolledOffset(self.menu_scrolled_offsets["alt_sub"..dictnum])
+            self.menu_opened[button_dialog2] = true
+            UIManager:show(button_dialog2)
+        end
+        table.insert(row, {
+            text = text,
+            lang = lang,
+            avoid_text_truncation = avoid_text_truncation,
+            font_size = font_size,
+            font_bold = bold,
+            width = right_width,
+            callback = callback,
+            hold_callback = hold_callback,
+            id = button_id,
+        })
+        table.insert(buttons, row)
+    end
+    button_dialog = ButtonDialog:new{
+        width = max_width,
+        shrink_unneeded_width = true,
+        buttons = buttons,
+        anchor = function()
+            return self.dict_title.left_button.image.dimen, true -- pop down
+        end,
+        tap_close_callback = function()
+            self.menu_scrolled_offsets["alt"] = button_dialog:getScrolledOffset()
+            self.menu_opened[button_dialog] = nil
+        end
+    }
+    button_dialog:setScrolledOffset(self.menu_scrolled_offsets["alt"])
+    self.menu_opened[button_dialog] = true
+    UIManager:show(button_dialog)
+end
+
+function DictQuickLookup:showWikiResultsMenu()
+    -- Show one row with each result's article title
+    local max_width = math.floor(self.width * 0.75)
+    local font_size = 18
+    local button_dialog
+    local buttons = {}
+    for idx, result in ipairs(self.results) do
+        local bold = idx == self.dict_index
+        local row = {{
+            text = result.word,
+            lang = result.lang,
+            font_size = font_size,
+            font_bold = bold,
+            align = "left",
+            callback = function()
+                self.menu_scrolled_offsets["wiki"] = button_dialog:getScrolledOffset()
+                self.menu_opened[button_dialog] = nil
+                UIManager:close(button_dialog)
+                self:changeDictionary(idx)
+            end,
+            hold_callback = function()
+                -- Allow doing another lookup with this result title
+                self:lookupWikipedia(false, result.word)
+            end,
+        }}
+        table.insert(buttons, row)
+    end
+    button_dialog = ButtonDialog:new{
+        width = max_width,
+        shrink_unneeded_width = true,
+        buttons = buttons,
+        -- We requested 30 results, so we will probably be scrolling.
+        -- If we do, ensure we use these values (they will all make full pages
+        -- if we get 30 results), depending on what the screen height allows.
+        rows_per_page = { 15, 10, 6 },
+        anchor = function()
+            return self.dict_title.left_button.image.dimen, true -- pop down
+        end,
+        tap_close_callback = function()
+            self.menu_scrolled_offsets["wiki"] = button_dialog:getScrolledOffset()
+            self.menu_opened[button_dialog] = nil
+        end
+    }
+    button_dialog:setScrolledOffset(self.menu_scrolled_offsets["wiki"])
+    self.menu_opened[button_dialog] = true
+    UIManager:show(button_dialog)
 end
 
 return DictQuickLookup

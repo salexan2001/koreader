@@ -28,6 +28,7 @@ local order = {
         "autoturn",
         "----------------------------",
         "go_to_previous_location",
+        "go_to_next_location",
     },
     navi_settings = {
         "toc_alt_toc",
@@ -79,10 +80,13 @@ local order = {
         "status_bar",
     },
     document = {
+        "document_metadata_location",
         "document_auto_save",
         "document_save",
         "document_end_action",
         "language_support",
+        "----------------------------",
+        "partial_rerendering",
     },
     device = {
         "keyboard_layout",
@@ -98,6 +102,7 @@ local order = {
         "autoshutdown",
         "ignore_sleepcover",
         "ignore_open_sleepcover",
+        "cover_events",
         "ignore_battery_optimizations",
         "mass_storage_settings", -- if Device:canToggleMassStorage()
         "file_ext_assoc",
@@ -188,20 +193,25 @@ local order = {
         "patch_management",
     },
     search = {
+        "search_settings",
+        "----------------------------",
         "dictionary_lookup",
         "dictionary_lookup_history",
         "vocabbuilder",
-        "dictionary_settings",
         "----------------------------",
         "wikipedia_lookup",
         "wikipedia_history",
-        "wikipedia_settings",
         "----------------------------",
-        "translation_settings",
+        "translate_current_page",
         "----------------------------",
         "find_book_in_calibre_catalog",
         "fulltext_search",
         "bookmark_search",
+    },
+    search_settings = {
+        "dictionary_settings",
+        "wikipedia_settings",
+        "translation_settings",
     },
     filemanager = {},
     main = {

@@ -437,7 +437,6 @@ local ReaderFooter = WidgetContainer:extend{
     mode = MODE.page_progress,
     pageno = nil,
     pages = nil,
-    progress_percentage = 0.0,
     footer_text = nil,
     text_font_face = "ffont",
     height = Screen:scaleBySize(G_defaults:readSetting("DMINIBAR_CONTAINER_HEIGHT")),
@@ -496,6 +495,7 @@ ReaderFooter.default_settings = {
     progress_pct_format = "0",
     progress_margin = false,
     pages_left_includes_current_page = false,
+    initial_marker = false,
 }
 
 function ReaderFooter:init()
@@ -584,10 +584,11 @@ function ReaderFooter:init()
     self.progress_bar = ProgressWidget:new{
         width = nil,
         height = nil,
-        percentage = self.progress_percentage,
+        percentage = nil,
         tick_width = Screen:scaleBySize(self.settings.toc_markers_width),
         ticks = nil, -- ticks will be populated in self:updateFooterText
         last = nil, -- last will be initialized in self:updateFooterText
+        initial_pos_marker = self.settings.initial_marker,
     }
 
     if self.settings.progress_style_thin then
@@ -844,7 +845,7 @@ function ReaderFooter:setupTouchZones()
             id = "readerfooter_tap",
             ges = "tap",
             screen_zone = footer_screen_zone,
-            handler = function(ges) return self:onTapFooter(ges) end,
+            handler = function(ges) return self:TapFooter(ges) end,
             overrides = {
                 "readerconfigmenu_ext_tap",
                 "readerconfigmenu_tap",
@@ -1017,7 +1018,7 @@ function ReaderFooter:addToMainMenu(menu_items)
             enabled_func = function()
                 return not self.view.flipping_visible
             end,
-            callback = function() self:onTapFooter(true) end,
+            callback = function() self:onToggleFooterMode() end,
         })
         settings_submenu_num = 2
     end
@@ -1840,6 +1841,17 @@ With this enabled, the current page is included, so the count goes from n to 1 i
                             },
                         },
                     },
+                    {
+                        text = _("Show initial position marker"),
+                        checked_func = function()
+                            return self.settings.initial_marker == true
+                        end,
+                        callback = function()
+                            self.settings.initial_marker = not self.settings.initial_marker
+                            self.progress_bar.initial_pos_marker = self.settings.initial_marker
+                            self:refreshFooter(true)
+                        end
+                    },
                 },
             },
             {
@@ -2120,16 +2132,16 @@ function ReaderFooter:updateFooterPage(force_repaint, full_repaint)
         local flow = self.ui.document:getPageFlow(self.pageno)
         local page = self.ui.document:getPageNumberInFlow(self.pageno)
         local pages = self.ui.document:getTotalPagesInFlow(flow)
-        self.progress_bar.percentage = page / pages
+        self.progress_bar:setPercentage(page / pages)
     else
-        self.progress_bar.percentage = self.pageno / self.pages
+        self.progress_bar:setPercentage(self.pageno / self.pages)
     end
     self:updateFooterText(force_repaint, full_repaint)
 end
 
 function ReaderFooter:updateFooterPos(force_repaint, full_repaint)
     if type(self.position) ~= "number" then return end
-    self.progress_bar.percentage = self.position / self.doc_height
+    self.progress_bar:setPercentage(self.position / self.doc_height)
     self:updateFooterText(force_repaint, full_repaint)
 end
 
@@ -2354,12 +2366,7 @@ function ReaderFooter:onExitFlippingMode()
     self:rescheduleFooterAutoRefreshIfNeeded()
 end
 
-function ReaderFooter:onTapFooter(ges)
-    local ignore_lock = false
-    if ges == true then
-        ignore_lock = true
-        ges = nil
-    end
+function ReaderFooter:TapFooter(ges)
     if self.view.flipping_visible and ges then
         local pos = ges.pos
         local dimen = self.progress_bar.dimen
@@ -2371,9 +2378,12 @@ function ReaderFooter:onTapFooter(ges)
         self:onUpdateFooter(true)
         return true
     end
-    if self.has_no_mode or (self.settings.lock_tap and not ignore_lock) then
-        return
-    end
+    if self.settings.lock_tap then return end
+    return self:onToggleFooterMode()
+end
+
+function ReaderFooter:onToggleFooterMode()
+    if self.has_no_mode and self.settings.disable_progress_bar then return end
     if self.settings.all_at_once or self.has_no_mode then
         if self.mode >= 1 then
             self.mode = self.mode_list.off
@@ -2459,16 +2469,11 @@ function ReaderFooter:onOutOfScreenSaver()
     self:rescheduleFooterAutoRefreshIfNeeded()
 end
 
-function ReaderFooter:onLeaveStandby()
-    self:maybeUpdateFooter()
-    self:rescheduleFooterAutoRefreshIfNeeded()
-end
-
 function ReaderFooter:onSuspend()
     self:unscheduleFooterAutoRefresh()
+    -- Reset the initial marker
+    self.progress_bar.inital_percentage = nil
 end
-
-ReaderFooter.onEnterStandby = ReaderFooter.onSuspend
 
 function ReaderFooter:onCloseDocument()
     self:unscheduleFooterAutoRefresh()
@@ -2480,35 +2485,24 @@ function ReaderFooter:maybeUpdateFooter()
     self:onUpdateFooter(self:shouldBeRepainted())
 end
 
--- is the same as maybeUpdateFooter
 function ReaderFooter:onFrontlightStateChanged()
-    self:onUpdateFooter(self:shouldBeRepainted())
+    self:maybeUpdateFooter()
 end
+ReaderFooter.onCharging    = ReaderFooter.onFrontlightStateChanged
+ReaderFooter.onNotCharging = ReaderFooter.onFrontlightStateChanged
 
 function ReaderFooter:onNetworkConnected()
     if self.settings.wifi_status then
         self:maybeUpdateFooter()
     end
 end
-
-function ReaderFooter:onNetworkDisconnected()
-    if self.settings.wifi_status then
-        self:onUpdateFooter(self.view.footer_visible)
-    end
-end
-
-function ReaderFooter:onCharging()
-    self:maybeUpdateFooter()
-end
-
-function ReaderFooter:onNotCharging()
-    self:maybeUpdateFooter()
-end
+ReaderFooter.onNetworkDisconnected = ReaderFooter.onNetworkConnected
 
 function ReaderFooter:onSetRotationMode()
     self:updateFooterContainer()
     self:resetLayout(true)
 end
+ReaderFooter.onScreenResize = ReaderFooter.onSetRotationMode
 
 function ReaderFooter:onSetPageHorizMargins(h_margins)
     self.book_margins_footer_width = math.floor((h_margins[1] + h_margins[2])/2)
@@ -2518,13 +2512,12 @@ function ReaderFooter:onSetPageHorizMargins(h_margins)
     end
 end
 
-function ReaderFooter:onScreenResize()
-    self:updateFooterContainer()
-    self:resetLayout(true)
-end
-
 function ReaderFooter:onTimeFormatChanged()
     self:refreshFooter(true, true)
+end
+
+function ReaderFooter:onCloseWidget()
+    self:free()
 end
 
 return ReaderFooter

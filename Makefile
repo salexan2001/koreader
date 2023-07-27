@@ -31,12 +31,7 @@ endif
 ANDROID_VERSION?=$(shell git rev-list --count HEAD)
 ANDROID_NAME?=$(VERSION)
 
-# set PATH to find CC in managed toolchains
-ifeq ($(TARGET), android)
-	PATH:=$(ANDROID_TOOLCHAIN)/bin:$(PATH)
-endif
-
-MACHINE=$(shell PATH='$(PATH)' $(CC) -dumpmachine 2>/dev/null)
+MACHINE=$(shell $(CC) -dumpmachine 2>/dev/null)
 ifdef KODEBUG
 	MACHINE:=$(MACHINE)-debug
 	KODEDUG_SUFFIX:=-debug
@@ -95,7 +90,7 @@ else
 	cp -f $(KOR_BASE)/ev_replay.py $(INSTALL_DIR)/koreader/
 	@echo "[*] create symlink instead of copying files in development mode"
 	cd $(INSTALL_DIR)/koreader && \
-		bash -O extglob -c "ln -sf ../../$(KOR_BASE)/$(OUTPUT_DIR)/!(cache) ."
+		bash -O extglob -c "ln -sf ../../$(KOR_BASE)/$(OUTPUT_DIR)/!(cache|history) ."
 	@echo "[*] install front spec only for the emulator"
 	cd $(INSTALL_DIR)/koreader/spec && test -e front || \
 		ln -sf ../../../../spec ./front
@@ -368,11 +363,9 @@ endif
 		mv *.AppImage ../../koreader-$(DIST)-$(MACHINE)-$(VERSION).AppImage
 
 androidupdate: all
-	# in runtime luajit-launcher's libluajit.so will be loaded
-	-rm $(INSTALL_DIR)/koreader/libs/libluajit.so
-
-        # fresh APK assets
-	rm -rfv $(ANDROID_ASSETS) $(ANDROID_LIBS_ROOT)
+	# Note: do not remove the module directory so there's no need
+	# for `mk7z.sh` to always recreate `assets.7z` from scratch.
+	rm -rfv $(ANDROID_LIBS_ROOT)
 	mkdir -p $(ANDROID_ASSETS) $(ANDROID_LIBS_ABI)
 
 	# APK version
@@ -380,6 +373,8 @@ androidupdate: all
 
 	# shared libraries are stored as raw assets
 	cp -pR $(INSTALL_DIR)/koreader/libs $(ANDROID_LAUNCHER_DIR)/assets
+	# in runtime luajit-launcher's libluajit.so will be loaded
+	rm -vf $(ANDROID_LAUNCHER_DIR)/assets/libs/libluajit.so
 
 	# binaries are stored as shared libraries to prevent W^X exception on Android 10+
 	# https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission
@@ -387,34 +382,41 @@ androidupdate: all
 	echo "sdcv libsdcv.so" > $(ANDROID_ASSETS)/map.txt
 
 	# assets are compressed manually and stored inside the APK.
-	cd $(INSTALL_DIR)/koreader && 7z a -l -m0=lzma2 -mx=9 \
-		../../$(ANDROID_ASSETS)/koreader.7z * \
-		-xr!*cache$ \
-		-xr!*clipboard$ \
-		-xr!*data/dict$ \
-		-xr!*data/tessdata$ \
-		-xr!*history$ \
-		-xr!*l10n/templates$ \
-		-xr!*libs$ \
-		-xr!*ota$ \
-		-xr!*resources/fonts* \
-		-xr!*resources/icons/src* \
-		-xr!*rocks/bin$ \
-		-xr!*rocks/lib/luarocks$ \
-		-xr!*screenshots$ \
-		-xr!*share/man* \
-		-xr!*spec$ \
-		-xr!*tools$ \
-		-xr!*COPYING$ \
-		-xr!*Makefile$ \
-		-xr!*NOTES.txt$ \
-		-xr!*NOTICE$ \
-		-xr!*README.md$ \
-		-xr!*sdcv \
-		-xr'!.*'
+	cd $(INSTALL_DIR)/koreader && \
+		./tools/mk7z.sh \
+		../../$(ANDROID_ASSETS)/koreader.7z \
+		"$$(git show -s --format='%ci')" \
+		-m0=lzma2 -mx=9 \
+		-- . \
+		'-x!cache' \
+		'-x!clipboard' \
+		'-x!data/dict' \
+		'-x!data/tessdata' \
+		'-x!history' \
+		'-x!l10n/templates' \
+		'-x!libs' \
+		'-x!ota' \
+		'-x!resources/fonts*' \
+		'-x!resources/icons/src*' \
+		'-x!rocks/bin' \
+		'-x!rocks/lib/luarocks' \
+		'-x!screenshots' \
+		'-x!sdcv' \
+		'-x!spec' \
+		'-x!tools' \
+		'-xr!.*' \
+		'-xr!COPYING' \
+		'-xr!NOTES.txt' \
+		'-xr!NOTICE' \
+		'-xr!README.md' \
+		;
 
 	# make the android APK
-	$(MAKE) -C $(ANDROID_LAUNCHER_DIR) $(if $(KODEBUG), debug, release) \
+	# Note: filter out the `--debug=…` make flag
+	# so the old crummy version provided by the
+	# NDK does not blow a gasket.
+	MAKEFLAGS='$(filter-out --debug=%,$(MAKEFLAGS))' \
+		$(MAKE) -C $(ANDROID_LAUNCHER_DIR) $(if $(KODEBUG), debug, release) \
 		ANDROID_APPNAME=KOReader \
 		ANDROID_VERSION=$(ANDROID_VERSION) \
 		ANDROID_NAME=$(ANDROID_NAME) \
@@ -590,8 +592,11 @@ endif
 androiddev: androidupdate
 	$(MAKE) -C $(ANDROID_LAUNCHER_DIR) dev
 
-android-toolchain:
-	$(MAKE) -C $(KOR_BASE) android-toolchain
+android-ndk:
+	$(MAKE) -C $(KOR_BASE)/toolchain $(ANDROID_NDK_HOME)
+
+android-sdk:
+	$(MAKE) -C $(KOR_BASE)/toolchain $(ANDROID_HOME)
 
 
 # for gettext

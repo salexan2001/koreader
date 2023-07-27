@@ -1,5 +1,6 @@
 local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
+local ButtonDialog = require("ui/widget/buttondialog")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Event = require("ui/event")
@@ -12,6 +13,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local OverlapGroup = require("ui/widget/overlapgroup")
 local Size = require("ui/size")
+local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextWidget = require("ui/widget/textwidget")
 local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
@@ -20,6 +22,7 @@ local VerticalSpan = require("ui/widget/verticalspan")
 local Input = Device.input
 local Screen = Device.screen
 local logger = require("logger")
+local util = require("util")
 local _ = require("gettext")
 
 -- We use the BookMapRow widget, a local widget defined in bookmapwidget.lua,
@@ -106,11 +109,11 @@ function PageBrowserWidget:init()
     self.title_bar = TitleBar:new{
         fullscreen = true,
         title = self.title,
-        left_icon = "info",
-        left_icon_tap_callback = function() self:showHelp() end,
+        left_icon = "appbar.menu",
+        left_icon_tap_callback = function() self:showMenu() end,
         left_icon_hold_callback = function()
             -- Cycle nb of toc span levels shown in bottom row
-            if self:updateNbTocSpans(-1, true) then
+            if self:updateNbTocSpans(-1, true, true) then
                 self:updateLayout()
             end
         end,
@@ -132,6 +135,21 @@ function PageBrowserWidget:init()
     }
     self.span_height = test_w:getSize().h + BookMapRow.toc_span_border
     test_w:free()
+
+    -- For page numbers alongside thumbnails, use the same font size
+    -- we use for them in the ribbon
+    self.page_num_font_face = Font:getFace("infofont", 10)
+    if not self.page_num_width then
+        -- We'll be displaying the number vertically, so get the width we'd need
+        -- to display some wide single char (this will influence side and inter
+        -- thumbnails margins).
+        test_w = TextWidget:new{
+            text = "W",
+            face = self.page_num_font_face,
+        }
+        self.page_num_width = test_w:getWidth()
+        test_w:free()
+    end
 
     self.min_nb_rows = 1
     self.max_nb_rows = 6
@@ -243,29 +261,51 @@ function PageBrowserWidget:updateLayout()
         self.nb_rows = 2
     end
     self.nb_grid_items = self.nb_rows * self.nb_cols
+
+    self.thumbnails_pagenums = self.ui.doc_settings:readSetting("page_browser_thumbnails_pagenums")
+                               or G_reader_settings:readSetting("page_browser_thumbnails_pagenums") or 2
     -- Set our items target size
-    self.grid_item_margin = Screen:scaleBySize(10) -- borders will eat into this, it should be larger than borders thin+thick
-    self.grid_item_height = math.floor((self.grid_height - (self.nb_rows)*self.grid_item_margin) / self.nb_rows) -- no need for top margin, title bottom padding is enough
-    self.grid_item_width = math.floor((self.grid_width - (1+self.nb_cols)*self.grid_item_margin) / self.nb_cols)
+    -- Borders may eat into the margin, and the horizontal margin should be able to contain the page number
+    local grid_item_default_margin = Screen:scaleBySize(10)
+    local grid_item_pagenum_margin = self.page_num_width + Size.padding.small + Size.border.thick + Size.border.thin
+    local grid_item_inner_h_margin = grid_item_default_margin
+    local grid_item_outer_h_margin = grid_item_default_margin
+    if self.thumbnails_pagenums == 1 then
+        grid_item_outer_h_margin = grid_item_pagenum_margin
+    elseif self.thumbnails_pagenums == 2 then
+        grid_item_outer_h_margin = grid_item_pagenum_margin
+        grid_item_inner_h_margin = grid_item_pagenum_margin
+    end
+    self.grid_item_height = math.floor((self.grid_height - self.nb_rows*grid_item_default_margin) / self.nb_rows) -- no need for top margin, title bottom padding is enough
+    self.grid_item_width = math.floor((self.grid_width - 2*grid_item_outer_h_margin - (self.nb_cols-1)*grid_item_inner_h_margin) / self.nb_cols)
     self.grid_item_dimen = Geom:new{
         w = self.grid_item_width,
         h = self.grid_item_height
     }
+    -- Put any pixel left ouf by the flooring into grid_item_outer_h_margin, so everything looks balanced horizontally
+    grid_item_outer_h_margin = math.floor((self.grid_width - self.nb_cols * self.grid_item_width - (self.nb_cols-1)*grid_item_inner_h_margin) / 2)
 
     self.grid:clear()
 
     for idx = 1, self.nb_grid_items do
         local row = math.floor((idx-1)/self.nb_cols) -- start from 0
         local col = (idx-1) % self.nb_cols
+        local show_pagenum -- no page number shown on the left side of a thumbnail, unless:
+        if self.thumbnails_pagenums == 1 then -- only for the first thumbnail of each row
+            show_pagenum = col == 0
+        elseif self.thumbnails_pagenums == 2 then -- for all thumnbnails
+            show_pagenum = true
+        end
         if BD.mirroredUILayout() then
             col = self.nb_cols - col - 1
         end
-        local offset_x = self.grid_item_margin*(col+1) + self.grid_item_width*col
-        local offset_y = self.grid_item_margin*(row) + self.grid_item_height*row -- no need for 1st margin
+        local offset_x = grid_item_outer_h_margin + grid_item_inner_h_margin*col + self.grid_item_width*col
+        local offset_y = grid_item_default_margin*row + self.grid_item_height*row -- no need for 1st margin
         local grid_item = CenterContainer:new{
             dimen = self.grid_item_dimen:copy(),
         }
         table.insert(self.grid, FrameContainer:new{
+            show_pagenum = show_pagenum,
             overlap_offset = {offset_x, offset_y},
             margin = 0,
             padding = 0,
@@ -304,6 +344,14 @@ function PageBrowserWidget:update()
     end
     self.requests_batch_id = "PageBrowserWidget"..tostring(os.time())
 
+    for i=#self.grid, 1, -1 do
+        if self.grid[i].is_page_num_widget then
+            -- Remove page_num_widgets, as we'll be recreating them
+            local widget = table.remove(self.grid, i)
+            widget:free()
+        end
+    end
+
     if not self.focus_page then
         self.focus_page = self.cur_page or 1
     end
@@ -325,64 +373,96 @@ function PageBrowserWidget:update()
         p_start = 1
     end
 
+    -- Extended separators below the baseline for pages starting thumbnail rows
+    local extended_sep_pages = {}
+    for p=grid_page_start+self.nb_cols, grid_page_end, self.nb_cols do
+        extended_sep_pages[p] = BookMapRow.extended_marker.LARGE
+    end
+
     -- Show the page number or label at the bottom page slot every N slots, with N
     -- the nb of thumbnails so we get at least one page label in our viewport.
     local page_texts_cycle = math.min(self.nb_grid_items, 10) -- but max 10
     local next_p = p_start
     local cur_page_label_idx = 1
-    local page_texts = {}
+    local page_texts = {} -- to be provided to the bottom ribbon BookMapRow
+    self.pagenum_page_texts = {} -- to be displayed alongside thumbnails
     for p=p_start, p_end do
+        -- This may be expensive, so compute only the ones we need for display
+        local show_at_bottom
         if p >= next_p then
             -- Only show a page text if there is no indicator on that slot
             if p ~= self.cur_page and not self.bookmarked_pages[p] and not self.previous_locations[p] then
-                local page_text
-                if self.page_labels then
-                    local page_label
-                    for idx=cur_page_label_idx, #self.page_labels do
-                        local item = self.page_labels[idx]
-                        if item.page >= p then
-                            if item.page == p then
-                                page_label = item.label
-                            end
-                            break
+                show_at_bottom = true
+            end
+        end
+        local show_near_thumbnail
+        if p >= grid_page_start and p <= grid_page_end then
+            show_near_thumbnail = self.grid[p - grid_page_start + 1].show_pagenum
+        end
+        if show_at_bottom or show_near_thumbnail then
+            local page_text, thumbnail_page_text
+            if self.page_labels then
+                local page_label
+                for idx=cur_page_label_idx, #self.page_labels do
+                    local item = self.page_labels[idx]
+                    if item.page >= p then
+                        if item.page == p then
+                            page_label = item.label
                         end
-                        cur_page_label_idx = idx
+                        break
                     end
-                    if page_label then
-                        page_text = self.ui.pagemap:cleanPageLabel(page_label)
-                    end
-                elseif self.has_hidden_flows then
-                    local flow = self.ui.document:getPageFlow(p)
-                    if flow == 0 then
-                        page_text = tostring(self.ui.document:getPageNumberInFlow(p))
-                    else
-                        page_text = string.format("[%d]%d", self.ui.document:getPageNumberInFlow(p), self.ui.document:getPageFlow(p))
-                    end
+                    cur_page_label_idx = idx
+                end
+                if page_label then
+                    page_text = self.ui.pagemap:cleanPageLabel(page_label)
+                elseif show_near_thumbnail then
+                    -- When reference pages may span multiple screen pages, the above may not get
+                    -- a page_text for some pages, which is fine for the bottom ribbon: it will
+                    -- display it for the next slot where a new reference page starts.
+                    -- But for thumbnails, we want to show some page number text, so fetch
+                    -- the previous one (that started on a previous screen page).
+                    thumbnail_page_text = self.ui.pagemap:cleanPageLabel(self.page_labels[cur_page_label_idx].label)
+                end
+            elseif self.has_hidden_flows then
+                local flow = self.ui.document:getPageFlow(p)
+                if flow == 0 then
+                    page_text = tostring(self.ui.document:getPageNumberInFlow(p))
                 else
-                    page_text = tostring(p)
+                    local page_number_in_flow = self.ui.document:getPageNumberInFlow(p)
+                    local page_flow = self.ui.document:getPageFlow(p)
+                    page_text = string.format("[%d]%d", page_number_in_flow, page_flow)
+                    -- Use something that will feel alike brackets when vertically
+                    -- (Harfbuzz will properly mirror these if the UI is RTL)
+                    thumbnail_page_text = string.format("\u{2E1D}%d\u{2E0C}%d", page_number_in_flow, page_flow)
                 end
-                if page_text then
-                    local page_block, page_block_dx -- centered by default
-                    if p == p_start or p == grid_page_start or p == grid_page_end+1 then
-                        page_block = "left"
-                        page_block_dx = Size.padding.tiny
-                        if p == grid_page_start then
-                            page_block_dx = page_block_dx + self.view_finder_bw + 1
-                        end
-                    elseif p == p_end or p == grid_page_end or p == grid_page_start-1 then
-                        page_block = "right"
-                        page_block_dx = Size.padding.tiny
-                        if p == grid_page_end then
-                            page_block_dx = page_block_dx + self.view_finder_bw + 1
-                        end
+            else
+                page_text = tostring(p)
+            end
+            if page_text and show_at_bottom then
+                local page_block, page_block_dx -- centered by default
+                if p == p_start or p == grid_page_start or p == grid_page_end+1 then
+                    page_block = "left"
+                    page_block_dx = Size.padding.tiny
+                    if p == grid_page_start then
+                        page_block_dx = page_block_dx + self.view_finder_bw + 1
                     end
-                    page_texts[p] = {
-                        text = page_text,
-                        block = page_block,
-                        block_dx = page_block_dx,
-                    }
-                    next_p = p + page_texts_cycle
+                elseif p == p_end or p == grid_page_end or p == grid_page_start-1 then
+                    page_block = "right"
+                    page_block_dx = Size.padding.tiny
+                    if p == grid_page_end then
+                        page_block_dx = page_block_dx + self.view_finder_bw + 1
+                    end
                 end
+                page_texts[p] = {
+                    text = page_text,
+                    block = page_block,
+                    block_dx = page_block_dx,
+                }
+                next_p = p + page_texts_cycle
+            end
+            if show_near_thumbnail then
+                -- Dedicated thumbnail_page_text, or the default one
+                self.pagenum_page_texts[p] = thumbnail_page_text or page_text
             end
         end
     end
@@ -476,6 +556,7 @@ function PageBrowserWidget:update()
         read_pages = self.read_pages,
         current_session_duration = self.current_session_duration,
         page_texts = page_texts,
+        extended_sep_pages = extended_sep_pages,
     }
     self.row[1] = row
 
@@ -600,6 +681,36 @@ function PageBrowserWidget:showTile(grid_idx, page, tile, do_refresh)
         -- thumb_frame will overflow its CenterContainer because of the added borders,
         -- but CenterContainer handles that well. We will refresh the outer dimensions.
 
+    local page_num_widget
+    if item_frame.show_pagenum and self.pagenum_page_texts[page] then
+        local page_text = table.concat(util.splitToChars(self.pagenum_page_texts[page]), "\n")
+        page_num_widget = TextBoxWidget:new{
+            text = page_text,
+            width = self.page_num_width,
+            face = self.page_num_font_face,
+            line_height = 0, -- no additional line height
+            alignment = BD.mirroredUILayout() and "left" or "right",
+            alignment_strict = true,
+            is_page_num_widget = true, -- so we can clear them in :update()
+        }
+        -- Only now that we know the thumbnail size, we can position this vertical
+        -- page number widget alongside and at the top of the thumbnail left edge
+        local thumb_frame_dimen = thumb_frame:getSize()
+        local dw = self.grid_item_width - thumb_frame_dimen.w
+        local dh = self.grid_item_height - thumb_frame_dimen.h
+        local dx = math.floor(dw/2)
+        local dy = math.floor(dh/2)
+        local offset_y = item_frame.overlap_offset[2] + dy
+        local offset_x
+        if BD.mirroredUILayout() then
+            offset_x = item_frame.overlap_offset[1] + self.grid_item_width - dx + Size.padding.small
+        else
+            offset_x = item_frame.overlap_offset[1] + dx - page_num_widget:getSize().w - Size.padding.small
+        end
+        page_num_widget.overlap_offset = {offset_x, offset_y}
+        table.insert(self.grid, page_num_widget)
+    end
+
     if do_refresh then
         if self.wait_for_refresh_on_show_tile then
             self.wait_for_refresh_on_show_tile = nil
@@ -608,24 +719,187 @@ function PageBrowserWidget:showTile(grid_idx, page, tile, do_refresh)
             UIManager:waitForVSync()
         end
         UIManager:setDirty(self, function()
+            if page_num_widget then
+                return "ui", thumb_frame.dimen:combine(page_num_widget.dimen)
+            end
             return "ui", thumb_frame.dimen
         end)
     end
 end
 
-function PageBrowserWidget:showHelp()
+function PageBrowserWidget:showMenu()
+    local button_dialog
+    -- Width of our -/+ buttons, so it looks fine with Button's default font size of 20
+    local plus_minus_width = Screen:scaleBySize(60)
+    local buttons = {
+        {{
+            text = _("About page browser"),
+            align = "left",
+            callback = function()
+                self:showAbout()
+            end,
+        }},
+        {{
+            text = _("Available gestures"),
+            align = "left",
+            callback = function()
+                self:showGestures()
+            end,
+        }},
+        {
+            {
+                text = _("Thumbnail columns"),
+                callback = function() end,
+                align = "left",
+            },
+            {
+                text = "\u{2796}", -- Heavy minus sign
+                enabled_func = function() return self.nb_cols > self.min_nb_cols end,
+                callback = function()
+                    if self:updateNbCols(-1, true) then
+                        self:updateLayout()
+                    end
+                end,
+                width = plus_minus_width,
+            },
+            {
+                text = "\u{2795}", -- Heavy plus sign
+                enabled_func = function() return self.nb_cols < self.max_nb_cols end,
+                callback = function()
+                    if self:updateNbCols(1, true) then
+                        self:updateLayout()
+                    end
+                end,
+                width = plus_minus_width,
+            }
+        },
+        {
+            {
+                text = _("Thumbnail rows"),
+                callback = function() end,
+                align = "left",
+            },
+            {
+                text = "\u{2796}", -- Heavy minus sign
+                enabled_func = function() return self.nb_rows > self.min_nb_rows end,
+                callback = function()
+                    if self:updateNbRows(-1, true) then
+                        self:updateLayout()
+                    end
+                end,
+                width = plus_minus_width,
+            },
+            {
+                text = "\u{2795}", -- Heavy plus sign
+                enabled_func = function() return self.nb_rows < self.max_nb_rows end,
+                callback = function()
+                    if self:updateNbRows(1, true) then
+                        self:updateLayout()
+                    end
+                end,
+                width = plus_minus_width,
+            }
+        },
+        {
+            {
+                text = _("Thumbnail page numbers"),
+                callback = function() end,
+                align = "left",
+            },
+            {
+                text = "\u{2796}", -- Heavy minus sign
+                enabled_func = function() return self.thumbnails_pagenums > 0 end,
+                callback = function()
+                    if self:updateThumbnailPageNumsDisplayType(-1, true) then
+                        self:updateLayout()
+                    end
+                end,
+                width = plus_minus_width,
+            },
+            {
+                text = "\u{2795}", -- Heavy plus sign
+                enabled_func = function() return self.thumbnails_pagenums < 2 end,
+                callback = function()
+                    if self:updateThumbnailPageNumsDisplayType(1, true) then
+                        self:updateLayout()
+                    end
+                end,
+                width = plus_minus_width,
+            }
+        },
+        {
+            {
+                text = _("Chapters in bottom ribbon"),
+                callback = function() end,
+                align = "left",
+            },
+            {
+                text = "\u{2796}", -- Heavy minus sign
+                enabled_func = function() return self.nb_toc_spans > 0 end,
+                callback = function()
+                    if self:updateNbTocSpans(-1, true) then
+                        self:updateLayout()
+                    end
+                end,
+                width = plus_minus_width,
+            },
+            {
+                text = "\u{2795}", -- Heavy plus sign
+                enabled_func = function() return self.nb_toc_spans < self.max_toc_depth end,
+                callback = function()
+                    if self:updateNbTocSpans(1, true) then
+                        self:updateLayout()
+                    end
+                end,
+                width = plus_minus_width,
+            }
+        },
+    }
+    button_dialog = ButtonDialog:new{
+        -- width = math.floor(Screen:getWidth() / 2),
+        width = math.floor(Screen:getWidth() * 0.9), -- max width, will get smaller
+        shrink_unneeded_width = true,
+        buttons = buttons,
+        anchor = function()
+            return self.title_bar.left_button.image.dimen
+        end,
+    }
+    UIManager:show(button_dialog)
+end
+
+function PageBrowserWidget:showAbout()
     UIManager:show(InfoMessage:new{
         text = _([[
 Page browser shows thumbnails of pages.
 
-The bottom ribbon displays an extract of the book map around the shown pages: see the book map help for details.
+The bottom ribbon displays an extract of the book map around the pages displayed:
 
+If statistics are enabled, black bars are shown for already read pages (gray for pages read in the current reading session). Their heights vary depending on the time spent reading the page.
+Chapters are shown above the pages they encompass.
+Under the pages, these indicators may be shown:
+▲ current page
+❶ ❷ … previous locations
+▒ highlighted text
+ highlighted text with notes
+ bookmarked page]]),
+    })
+end
+
+function PageBrowserWidget:showGestures()
+    UIManager:show(InfoMessage:new{
+        text = _([[
 Swipe along the top or left screen edge to change the number of columns or rows of thumbnails.
-Swipe vertically to move one row, horizontally to move one page.
+
+Swipe vertically to move one row, horizontally to move one screen.
+
 Swipe horizontally in the bottom ribbon to move by the full stripe.
+
 Tap in the bottom ribbon on a page to focus thumbnails on this page.
+
 Tap on a thumbnail to read this page.
-Long-press on ⓘ to decrease or reset the number of chapter levels shown in the bottom ribbon.
+
+Long-press on ≡ to decrease or reset the number of chapter levels shown in the bottom ribbon.
+
 Any multiswipe will close the page browser.]]),
     })
 end
@@ -675,25 +949,34 @@ function PageBrowserWidget:saveSettings(reset)
     self.ui.doc_settings:saveSetting("page_browser_toc_depth", self.nb_toc_spans)
     self.ui.doc_settings:saveSetting("page_browser_nb_rows", self.nb_rows)
     self.ui.doc_settings:saveSetting("page_browser_nb_cols", self.nb_cols)
+    self.ui.doc_settings:saveSetting("page_browser_thumbnails_pagenums", self.thumbnails_pagenums)
     -- We also save nb_rows/nb_cols as global settings, so they will apply on other books
     -- where they were not already set
     G_reader_settings:saveSetting("page_browser_nb_rows", self.nb_rows)
     G_reader_settings:saveSetting("page_browser_nb_cols", self.nb_cols)
+    G_reader_settings:saveSetting("page_browser_thumbnails_pagenums", self.thumbnails_pagenums)
 end
 
-function PageBrowserWidget:updateNbTocSpans(value, relative)
+function PageBrowserWidget:updateNbTocSpans(value, relative, rollover)
     local new_nb_toc_spans
     if relative then
         new_nb_toc_spans = self.nb_toc_spans + value
     else
         new_nb_toc_spans = value
     end
-    -- We don't cap, we cycle
     if new_nb_toc_spans < 0 then
-        new_nb_toc_spans = self.max_toc_depth
+        if rollover then
+            new_nb_toc_spans = self.max_toc_depth
+        else
+            new_nb_toc_spans = 0
+        end
     end
     if new_nb_toc_spans > self.max_toc_depth then
-        new_nb_toc_spans = 0
+        if rollover then
+            new_nb_toc_spans = 0
+        else
+            new_nb_toc_spans = self.max_toc_depth
+        end
     end
     if new_nb_toc_spans == self.nb_toc_spans then
         return false
@@ -745,6 +1028,27 @@ function PageBrowserWidget:updateNbRows(value, relative)
     return true
 end
 
+function PageBrowserWidget:updateThumbnailPageNumsDisplayType(value, relative)
+    local new_thumbnails_pagenums
+    if relative then
+        new_thumbnails_pagenums = self.thumbnails_pagenums + value
+    else
+        new_thumbnails_pagenums = value
+    end
+    if new_thumbnails_pagenums < 0 then
+        new_thumbnails_pagenums = 0
+    end
+    if new_thumbnails_pagenums > 2 then
+        new_thumbnails_pagenums = 2
+    end
+    if new_thumbnails_pagenums == self.thumbnails_pagenums then
+        return false
+    end
+    self.thumbnails_pagenums = new_thumbnails_pagenums
+    self:saveSettings()
+    return true
+end
+
 function PageBrowserWidget:updateFocusPage(value, relative)
     local new_focus_page
     if relative then
@@ -752,11 +1056,31 @@ function PageBrowserWidget:updateFocusPage(value, relative)
     else
         new_focus_page = value
     end
-    if new_focus_page < 1 then
-        new_focus_page = 1
-    end
-    if new_focus_page > self.nb_pages then
-        new_focus_page = self.nb_pages
+    -- Handle scroll by row or page a bit differently, so we dont constrain and
+    -- readjust the focus page: when later scrolling in the other direction,
+    -- we'll find exactly the view as it was (this means that we allow a single
+    -- thumbnail in the view, but it's less confusing this way).
+    if relative and (value == -self.nb_grid_items or value == -self.nb_cols) then
+        -- Going back one page or row. If first thumbnail is page 1 (or less if
+        -- blank), don't move. Otherwise, go ahead without any check as we'll
+        -- have something to display.
+        if self.focus_page - self.focus_page_shift <= 1 then
+            return
+        end
+    elseif relative and (value == self.nb_grid_items or value == self.nb_cols) then
+        -- Going forward one page or row. If last thumbnail is last page (or more if
+        -- blank), don't move. Otherwise, go ahead without any check as we'll
+        -- have something to display.
+        if self.focus_page - self.focus_page_shift + self.nb_grid_items - 1 >= self.nb_pages then
+            return
+        end
+    else
+        if new_focus_page < 1 then
+            new_focus_page = 1
+        end
+        if new_focus_page > self.nb_pages then
+            new_focus_page = self.nb_pages
+        end
     end
     if new_focus_page == self.focus_page then
         return false
@@ -983,6 +1307,32 @@ function PageBrowserWidget:onHold(arg, ges)
             })
         end
         return true
+    end
+    -- Hold on title: do nothing
+    if ges.pos.y < self.title_bar_h then
+        return true
+    end
+    -- If hold on a thumbnail, toggle bookmark on that page
+    for idx=1, self.nb_grid_items do
+        if ges.pos:intersectWith(self.grid[idx].dimen) then
+            local page = self.grid[idx].page_idx
+            if page and self.grid[idx][1][1].is_page_thumbnail then
+                -- Only allow hold on fully displayed thumbnails.
+                -- Also, a thumbnail might be smaller than the original grid
+                -- item dimension. Be sure the hold is on it (otherwise, it's
+                -- a hold in the inter thumbnail margin, that we'd rather not
+                -- handle)
+                local thumb_frame = self.grid[idx][1][1]
+                if ges.pos:intersectWith(thumb_frame.dimen) then
+                    self.ui.bookmark:toggleBookmark(page)
+                    -- Update our cached bookmarks info and ensure the bottom ribbon is redrawn
+                    self.bookmarked_pages = self.ui.bookmark:getBookmarkedPages()
+                    self:updateLayout()
+                    return true
+                end
+            end
+            break
+        end
     end
     return true
 end

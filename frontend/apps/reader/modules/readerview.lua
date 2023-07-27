@@ -190,6 +190,14 @@ function ReaderView:paintTo(bb, x, y)
         elseif self.view_mode == "scroll" then
             self:drawScrollView(bb, x, y)
         end
+        local should_repaint = self.ui.rolling:handlePartialRerendering()
+        if should_repaint then
+            -- ReaderRolling may have repositionned on another page containing
+            -- the xpointer of the top of the original page: recalling this is
+            -- all there is to do.
+            self:paintTo(bb, x, y)
+            return
+        end
     end
 
     -- dim last read area
@@ -203,6 +211,9 @@ function ReaderView:paintTo(bb, x, y)
             local center_offset = bit.rshift(self.arrow.height, 1)
             -- Paint at the proper y origin depending on wheter we paged forward (dim_area.y == 0) or backward
             self.arrow:paintTo(bb, 0, self.dim_area.y == 0 and self.dim_area.h - center_offset or self.dim_area.y - center_offset)
+        elseif self.page_overlap_style == "line" then
+            bb:paintRect(0, self.dim_area.y == 0 and self.dim_area.h or self.dim_area.y,
+                self.dim_area.w, Size.line.medium, Blitbuffer.COLOR_BLACK)
         end
     end
     -- draw saved highlight
@@ -225,10 +236,9 @@ function ReaderView:paintTo(bb, x, y)
     if self.footer_visible then
         self.footer:paintTo(bb, x, y)
     end
-    -- paint flipping or select mode sign
-    if self.flipping_visible or self.ui.highlight.select_mode then
-        self.flipping:paintTo(bb, x, y)
-    end
+    -- paint top left corner indicator
+    self.flipping:paintTo(bb, x, y)
+    -- paint view modules
     for _, m in pairs(self.view_modules) do
         m:paintTo(bb, x, y)
     end
@@ -609,19 +619,19 @@ function ReaderView:drawHighlightRect(bb, _x, _y, rect, drawer, draw_note_mark)
     if drawer == "lighten" then
         bb:lightenRect(x, y, w, h, self.highlight.lighten_factor)
     elseif drawer == "underscore" then
-        bb:paintRect(x, y + h - 1, w, 2, Blitbuffer.COLOR_GRAY)
+        bb:paintRect(x, y + h - 1, w, Size.line.medium, Blitbuffer.COLOR_GRAY)
     elseif drawer == "strikeout" then
         local line_y = y + math.floor(h / 2) + 1
         if self.ui.paging then
             line_y = line_y + 2
         end
-        bb:paintRect(x, line_y, w, 2, Blitbuffer.COLOR_BLACK)
+        bb:paintRect(x, line_y, w, Size.line.medium, Blitbuffer.COLOR_BLACK)
     elseif drawer == "invert" then
         bb:invertRect(x, y, w, h)
     end
     if draw_note_mark then
         if self.highlight.note_mark == "underline" then
-            bb:paintRect(x, y + h - 1, w, 2, Blitbuffer.COLOR_BLACK)
+            bb:paintRect(x, y + h - 1, w, Size.line.medium, Blitbuffer.COLOR_BLACK)
         else
             local note_mark_pos_x
             if self.ui.paging or
@@ -847,8 +857,11 @@ In combination with zoom to fit page, page height, content height, content or co
 end
 
 function ReaderView:onReadSettings(config)
-    self.document:setTileCacheValidity(config:readSetting("tile_cache_validity_ts"))
-    self.render_mode = config:readSetting("render_mode") or 0
+    if self.ui.paging then
+        self.document:setTileCacheValidity(config:readSetting("tile_cache_validity_ts"))
+        self.render_mode = config:readSetting("render_mode") or 0
+        self.state.gamma = config:readSetting("gamma") or 1.0
+    end
     local rotation_mode = nil
     local locked = G_reader_settings:isTrue("lock_rotation")
     -- Keep current rotation by doing nothing when sticky rota is enabled.
@@ -858,17 +871,13 @@ function ReaderView:onReadSettings(config)
             rotation_mode = config:readSetting("rotation_mode") -- Doc's
         else
             -- No doc specific rotation, pickup global defaults for the doc type
-            if self.ui.paging then
-                rotation_mode = G_reader_settings:readSetting("kopt_rotation_mode") or Screen.DEVICE_ROTATED_UPRIGHT
-            else
-                rotation_mode = G_reader_settings:readSetting("copt_rotation_mode") or Screen.DEVICE_ROTATED_UPRIGHT
-            end
+            local setting_name = self.ui.paging and "kopt_rotation_mode" or "copt_rotation_mode"
+            rotation_mode = G_reader_settings:readSetting(setting_name) or Screen.DEVICE_ROTATED_UPRIGHT
         end
     end
     if rotation_mode then
         self:onSetRotationMode(rotation_mode)
     end
-    self.state.gamma = config:readSetting("gamma") or 1.0
     local full_screen = config:readSetting("kopt_full_screen") or self.document.configurable.full_screen
     if full_screen == 0 then
         self.footer_visible = false
@@ -1016,8 +1025,10 @@ function ReaderView:onSWDitheringUpdate(toggle)
 end
 
 function ReaderView:onFontSizeUpdate(font_size)
-    self.ui:handleEvent(Event:new("ReZoom", font_size))
-    Notification:notify(T(_("Font zoom set to: %1."), font_size))
+    if self.ui.paging then
+        self.ui:handleEvent(Event:new("ReZoom", font_size))
+        Notification:notify(T(_("Font zoom set to: %1."), font_size))
+    end
 end
 
 function ReaderView:onDefectSizeUpdate()
@@ -1051,20 +1062,22 @@ function ReaderView:onPageGapUpdate(page_gap)
 end
 
 function ReaderView:onSaveSettings()
-    if self.document:isEdited() and G_reader_settings:readSetting("save_document") ~= "always" then
-        -- Either "disable" (and the current tiles will be wrong) or "prompt" (but the
-        -- prompt will happen later, too late to catch "Don't save"), so force cached
-        -- tiles to be ignored on next opening.
-        self.document:resetTileCacheValidity()
+    if self.ui.paging then
+        if self.document:isEdited() and G_reader_settings:readSetting("save_document") ~= "always" then
+            -- Either "disable" (and the current tiles will be wrong) or "prompt" (but the
+            -- prompt will happen later, too late to catch "Don't save"), so force cached
+            -- tiles to be ignored on next opening.
+            self.document:resetTileCacheValidity()
+        end
+        self.ui.doc_settings:saveSetting("tile_cache_validity_ts", self.document:getTileCacheValidity())
+        self.ui.doc_settings:saveSetting("render_mode", self.render_mode)
+        self.ui.doc_settings:saveSetting("gamma", self.state.gamma)
     end
-    self.ui.doc_settings:saveSetting("tile_cache_validity_ts", self.document:getTileCacheValidity())
-    self.ui.doc_settings:saveSetting("render_mode", self.render_mode)
     -- Don't etch the current rotation in stone when sticky rotation is enabled
     local locked = G_reader_settings:isTrue("lock_rotation")
     if not locked then
         self.ui.doc_settings:saveSetting("rotation_mode", Screen:getRotationMode())
     end
-    self.ui.doc_settings:saveSetting("gamma", self.state.gamma)
     self.ui.doc_settings:saveSetting("highlight", self.highlight.saved)
     self.ui.doc_settings:saveSetting("inverse_reading_order", self.inverse_reading_order)
     self.ui.doc_settings:saveSetting("show_overlap_enable", self.page_overlap_enable)
@@ -1135,7 +1148,7 @@ function ReaderView:isOverlapAllowed()
     if self.ui.paging then
         return not self.page_scroll
             and (self.ui.paging.zoom_mode ~= "page"
-                or (self.ui.paging.zoom_mode == "page" and self.ui.paging.is_reflowed))
+                or (self.ui.paging.zoom_mode == "page" and self.document.configurable.text_wrap == 1))
             and not self.ui.paging.zoom_mode:find("height")
     else
         return self.view_mode ~= "page"
@@ -1143,20 +1156,14 @@ function ReaderView:isOverlapAllowed()
 end
 
 function ReaderView:setupTouchZones()
-    if self.ui.rolling then
-        self.ui.rolling:setupTouchZones()
-    else
-        self.ui.paging:setupTouchZones()
-    end
+    (self.ui.rolling or self.ui.paging):setupTouchZones()
 end
 
 function ReaderView:onToggleReadingOrder()
     self.inverse_reading_order = not self.inverse_reading_order
     self:setupTouchZones()
     local is_rtl = self.inverse_reading_order ~= BD.mirroredUILayout() -- mirrored reading
-    UIManager:show(Notification:new{
-        text = is_rtl and _("RTL page turning.") or _("LTR page turning."),
-    })
+    Notification:notify(is_rtl and _("RTL page turning.") or _("LTR page turning."))
     return true
 end
 

@@ -55,7 +55,6 @@ function SkimToWidget:init()
     local larger_span_units = 3 -- 3 x small span width
     local nb_span_units = 2 + 2*larger_span_units
     local button_width = math.floor( (inner_width - nb_span_units * button_span_unit_width) * (1/5))
-    local button_inner_width = button_width - 2 * (Size.border.button + Size.padding.button)
     -- Update inner_width (possibly smaller because of math.floor())
     inner_width = button_width * 5 + nb_span_units * button_span_unit_width
 
@@ -71,6 +70,7 @@ function SkimToWidget:init()
         tick_width = Size.line.medium,
         last = self.page_count,
         alt = self.ui.document.flows,
+        initial_pos_marker = true,
     }
 
     -- Bottom row buttons
@@ -78,7 +78,7 @@ function SkimToWidget:init()
         text = "-1",
         radius = 0,
         enabled = true,
-        width = button_inner_width,
+        width = button_width,
         show_parent = self,
         vsync = true,
         callback = function()
@@ -89,7 +89,7 @@ function SkimToWidget:init()
         text = "-10",
         radius = 0,
         enabled = true,
-        width = button_inner_width,
+        width = button_width,
         show_parent = self,
         vsync = true,
         callback = function()
@@ -100,7 +100,7 @@ function SkimToWidget:init()
         text = "+1",
         radius = 0,
         enabled = true,
-        width = button_inner_width,
+        width = button_width,
         show_parent = self,
         vsync = true,
         callback = function()
@@ -111,7 +111,7 @@ function SkimToWidget:init()
         text = "+10",
         radius = 0,
         enabled = true,
-        width = button_inner_width,
+        width = button_width,
         show_parent = self,
         vsync = true,
         callback = function()
@@ -130,7 +130,7 @@ function SkimToWidget:init()
         padding = 0,
         bordersize = 0,
         enabled = true,
-        width = button_width, -- no border/padding: use outer button width
+        width = button_width,
         show_parent = self,
         callback = function()
             self.callback_switch_to_goto()
@@ -152,7 +152,7 @@ function SkimToWidget:init()
         text = chapter_next_text,
         radius = 0,
         enabled = true,
-        width = button_inner_width,
+        width = button_width,
         show_parent = self,
         vsync = true,
         callback = function()
@@ -169,7 +169,7 @@ function SkimToWidget:init()
         text = chapter_prev_text,
         radius = 0,
         enabled = true,
-        width = button_inner_width,
+        width = button_width,
         show_parent = self,
         vsync = true,
         callback = function()
@@ -186,7 +186,7 @@ function SkimToWidget:init()
         text = bookmark_next_text,
         radius = 0,
         enabled = true,
-        width = button_inner_width,
+        width = button_width,
         show_parent = self,
         vsync = true,
         callback = function()
@@ -201,7 +201,7 @@ function SkimToWidget:init()
         text = bookmark_prev_text,
         radius = 0,
         enabled = true,
-        width = button_inner_width,
+        width = button_width,
         show_parent = self,
         vsync = true,
         callback = function()
@@ -218,7 +218,7 @@ function SkimToWidget:init()
         end,
         radius = 0,
         enabled = true,
-        width = button_inner_width,
+        width = button_width,
         show_parent = self,
         callback = function()
             self.ui:handleEvent(Event:new("ToggleBookmark"))
@@ -335,6 +335,8 @@ function SkimToWidget:onCloseWidget()
     UIManager:setDirty(nil, function()
         return "ui", self.skimto_frame.dimen
     end)
+
+    self:free()
 end
 
 function SkimToWidget:onShow()

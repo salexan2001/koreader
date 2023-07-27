@@ -83,151 +83,81 @@ function CoverBrowser:addToMainMenu(menu_items)
         return
     end
 
+    local modes = {
+        { _("Classic (filename only)") },
+        { _("Mosaic with cover images"), "mosaic_image" },
+        { _("Mosaic with text covers"), "mosaic_text" },
+        { _("Detailed list with cover images and metadata"), "list_image_meta" },
+        { _("Detailed list with metadata, no images"), "list_only_meta" },
+        { _("Detailed list with cover images and filenames"), "list_image_filename" },
+    }
+    local sub_item_table, history_sub_item_table, collection_sub_item_table = {}, {}, {}
+    for i, v in ipairs(modes) do
+        local text, mode = unpack(v)
+        table.insert(sub_item_table, {
+            text = text,
+            checked_func = function()
+                return mode == filemanager_display_mode
+            end,
+            callback = function()
+                self:setupFileManagerDisplayMode(mode)
+                if BookInfoManager:getSetting("unified_display_mode") then
+                    self:setupHistoryDisplayMode(mode)
+                    self:setupCollectionDisplayMode(mode)
+                end
+            end,
+            separator = i == #modes,
+        })
+        table.insert(history_sub_item_table, {
+            text = text,
+            checked_func = function()
+                return mode == history_display_mode
+            end,
+            callback = function()
+                self:setupHistoryDisplayMode(mode)
+            end,
+        })
+        table.insert(collection_sub_item_table, {
+            text = text,
+            checked_func = function()
+                return mode == collection_display_mode
+            end,
+            callback = function()
+                self:setupCollectionDisplayMode(mode)
+            end,
+        })
+    end
+    table.insert(sub_item_table, {
+        text = _("Use this mode everywhere"),
+        checked_func = function()
+            return BookInfoManager:getSetting("unified_display_mode")
+        end,
+        callback = function()
+            local do_sync = not BookInfoManager:getSetting("unified_display_mode")
+            BookInfoManager:saveSetting("unified_display_mode", do_sync)
+            if do_sync then
+                self:setupHistoryDisplayMode(filemanager_display_mode)
+                self:setupCollectionDisplayMode(filemanager_display_mode)
+            end
+        end,
+    })
+    table.insert(sub_item_table, {
+        text = _("History display mode"),
+        enabled_func = function()
+            return not BookInfoManager:getSetting("unified_display_mode")
+        end,
+        sub_item_table = history_sub_item_table,
+    })
+    table.insert(sub_item_table, {
+        text = _("Favorites display mode"),
+        enabled_func = function()
+            return not BookInfoManager:getSetting("unified_display_mode")
+        end,
+        sub_item_table = collection_sub_item_table,
+    })
     menu_items.filemanager_display_mode = {
         text = _("Display mode"),
-        sub_item_table = {
-            -- selecting these does not close menu, which may be nice
-            -- so one can see how they look below the menu
-            {
-                text = _("Classic (filename only)"),
-                checked_func = function() return not filemanager_display_mode end,
-                callback = function()
-                   self:setupFileManagerDisplayMode("")
-                end,
-            },
-            {
-                text = _("Mosaic with cover images"),
-                checked_func = function() return filemanager_display_mode == "mosaic_image" end,
-                callback = function()
-                   self:setupFileManagerDisplayMode("mosaic_image")
-                end,
-            },
-            {
-                text = _("Mosaic with text covers"),
-                checked_func = function() return filemanager_display_mode == "mosaic_text" end,
-                callback = function()
-                   self:setupFileManagerDisplayMode("mosaic_text")
-                end,
-            },
-            {
-                text = _("Detailed list with cover images and metadata"),
-                checked_func = function() return filemanager_display_mode == "list_image_meta" end,
-                callback = function()
-                   self:setupFileManagerDisplayMode("list_image_meta")
-                end,
-            },
-            {
-                text = _("Detailed list with metadata, no images"),
-                checked_func = function() return filemanager_display_mode == "list_only_meta" end,
-                callback = function()
-                   self:setupFileManagerDisplayMode("list_only_meta")
-                end,
-            },
-            {
-                text = _("Detailed list with cover images and filenames"),
-                checked_func = function() return filemanager_display_mode == "list_image_filename" end,
-                callback = function()
-                   self:setupFileManagerDisplayMode("list_image_filename")
-                end,
-                separator = true,
-            },
-            -- Plug the same choices for History here as a submenu
-            -- (Any other suitable place for that ?)
-            {
-                text = _("History display mode"),
-                sub_item_table = {
-                    {
-                        text = _("Classic (filename only)"),
-                        checked_func = function() return not history_display_mode end,
-                        callback = function()
-                           self:setupHistoryDisplayMode("")
-                        end,
-                    },
-                    {
-                        text = _("Mosaic with cover images"),
-                        checked_func = function() return history_display_mode == "mosaic_image" end,
-                        callback = function()
-                           self:setupHistoryDisplayMode("mosaic_image")
-                        end,
-                    },
-                    {
-                        text = _("Mosaic with text covers"),
-                        checked_func = function() return history_display_mode == "mosaic_text" end,
-                        callback = function()
-                           self:setupHistoryDisplayMode("mosaic_text")
-                        end,
-                    },
-                    {
-                        text = _("Detailed list with cover images and metadata"),
-                        checked_func = function() return history_display_mode == "list_image_meta" end,
-                        callback = function()
-                           self:setupHistoryDisplayMode("list_image_meta")
-                        end,
-                    },
-                    {
-                        text = _("Detailed list with metadata, no images"),
-                        checked_func = function() return history_display_mode == "list_only_meta" end,
-                        callback = function()
-                           self:setupHistoryDisplayMode("list_only_meta")
-                        end,
-                    },
-                    {
-                        text = _("Detailed list with cover images and filenames"),
-                        checked_func = function() return history_display_mode == "list_image_filename" end,
-                        callback = function()
-                           self:setupHistoryDisplayMode("list_image_filename")
-                        end,
-                    },
-                },
-            },
-            {
-                text = _("Favorites display mode"),
-                sub_item_table = {
-                    {
-                        text = _("Classic (filename only)"),
-                        checked_func = function() return not collection_display_mode end,
-                        callback = function()
-                            self:setupCollectionDisplayMode("")
-                        end,
-                    },
-                    {
-                        text = _("Mosaic with cover images"),
-                        checked_func = function() return collection_display_mode == "mosaic_image" end,
-                        callback = function()
-                            self:setupCollectionDisplayMode("mosaic_image")
-                        end,
-                    },
-                    {
-                        text = _("Mosaic with text covers"),
-                        checked_func = function() return collection_display_mode == "mosaic_text" end,
-                        callback = function()
-                            self:setupCollectionDisplayMode("mosaic_text")
-                        end,
-                    },
-                    {
-                        text = _("Detailed list with cover images and metadata"),
-                        checked_func = function() return collection_display_mode == "list_image_meta" end,
-                        callback = function()
-                            self:setupCollectionDisplayMode("list_image_meta")
-                        end,
-                    },
-                    {
-                        text = _("Detailed list with metadata, no images"),
-                        checked_func = function() return collection_display_mode == "list_only_meta" end,
-                        callback = function()
-                            self:setupCollectionDisplayMode("list_only_meta")
-                        end,
-                    },
-                    {
-                        text = _("Detailed list with cover images and filenames"),
-                        checked_func = function() return collection_display_mode == "list_image_filename" end,
-                        callback = function()
-                            self:setupCollectionDisplayMode("list_image_filename")
-                        end,
-                    },
-                },
-            },
-        },
+        sub_item_table = sub_item_table,
     }
 
     -- add Mosaic / Detailed list mode settings to File browser Settings submenu
@@ -278,7 +208,7 @@ function CoverBrowser:addToMainMenu(menu_items)
                         end,
                     },
                     {
-                        text = _("Show hint for opened books in history"),
+                        text = _("Show hint for book status in history"),
                         checked_func = function() return BookInfoManager:getSetting("history_hint_opened") end,
                         callback = function()
                             if BookInfoManager:getSetting("history_hint_opened") then
@@ -290,7 +220,7 @@ function CoverBrowser:addToMainMenu(menu_items)
                         end,
                     },
                     {
-                        text = _("Show hint for opened books in favorites"),
+                        text = _("Show hint for book status in favorites"),
                         checked_func = function() return BookInfoManager:getSetting("collections_hint_opened") end,
                         callback = function()
                             if BookInfoManager:getSetting("collections_hint_opened") then
@@ -527,6 +457,7 @@ function CoverBrowser:setupFileManagerDisplayMode(display_mode)
     -- In both mosaic and list modes, replace original methods with those from
     -- our generic CoverMenu
     local CoverMenu = require("covermenu")
+    FileChooser.updateCache = CoverMenu.updateCache
     FileChooser.updateItems = CoverMenu.updateItems
     FileChooser.onCloseWidget = CoverMenu.onCloseWidget
 
@@ -592,6 +523,7 @@ local function _FileManagerHistory_updateItemTable(self)
         -- In both mosaic and list modes, replace original methods with those from
         -- our generic CoverMenu
         local CoverMenu = require("covermenu")
+        hist_menu.updateCache = CoverMenu.updateCache
         hist_menu.updateItems = CoverMenu.updateItems
         hist_menu.onCloseWidget = CoverMenu.onCloseWidget
         -- Also replace original onMenuHold (it will use original method, so remember it)
@@ -670,6 +602,7 @@ local function _FileManagerCollections_updateItemTable(self)
         -- In both mosaic and list modes, replace original methods with those from
         -- our generic CoverMenu
         local CoverMenu = require("covermenu")
+        coll_menu.updateCache = CoverMenu.updateCache
         coll_menu.updateItems = CoverMenu.updateItems
         coll_menu.onCloseWidget = CoverMenu.onCloseWidget
         -- Also replace original onMenuHold (it will use original method, so remember it)
@@ -733,6 +666,21 @@ function CoverBrowser:setupCollectionDisplayMode(display_mode)
         -- And let it know which display_mode we should use
         FileManagerCollection.display_mode = display_mode
     end
+end
+
+function CoverBrowser:getBookInfo(file)
+    return BookInfoManager:getBookInfo(file)
+end
+
+function CoverBrowser:deleteBookInfo(file)
+    BookInfoManager:deleteBookInfo(file)
+end
+
+function CoverBrowser:extractBooksInDirectory(path)
+    local Trapper = require("ui/trapper")
+    Trapper:wrap(function()
+        BookInfoManager:extractBooksInDirectory(path)
+    end)
 end
 
 return CoverBrowser

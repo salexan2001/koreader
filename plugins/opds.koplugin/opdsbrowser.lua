@@ -1,5 +1,5 @@
 local BD = require("ui/bidi")
-local ButtonDialogTitle = require("ui/widget/buttondialogtitle")
+local ButtonDialog = require("ui/widget/buttondialog")
 local Cache = require("cache")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DocumentRegistry = require("document/documentregistry")
@@ -11,7 +11,6 @@ local MultiInputDialog = require("ui/widget/multiinputdialog")
 local NetworkMgr = require("ui/network/manager")
 local OPDSParser = require("opdsparser")
 local OPDSPSE = require("opdspse")
-local Screen = require("device").screen
 local UIManager = require("ui/uimanager")
 local http = require("socket.http")
 local lfs = require("libs/libkoreader-lfs")
@@ -61,23 +60,22 @@ local OPDSBrowser = Menu:extend{
             url = "https://gallica.bnf.fr/opds",
         },
     }),
-    calibre_name = _("Local calibre library"),
-    calibre_opds = G_reader_settings:readSetting("calibre_opds", {}),
 
     catalog_type         = "application/atom%+xml",
     search_type          = "application/opensearchdescription%+xml",
     search_template_type = "application/atom%+xml",
     acquisition_rel      = "^http://opds%-spec%.org/acquisition",
+    borrow_rel           = "http://opds-spec.org/acquisition/borrow",
     image_rel            = "http://opds-spec.org/image",
+    image_rel_alt        = "http://opds-spec.org/cover", -- ManyBooks.net, not in spec
     thumbnail_rel        = "http://opds-spec.org/image/thumbnail",
+    thumbnail_rel_alt    = "http://opds-spec.org/thumbnail", -- ManyBooks.net, not in spec
     stream_rel           = "http://vaemendis.net/opds-pse/stream",
 
     root_catalog_title    = nil,
     root_catalog_username = nil,
     root_catalog_password = nil,
 
-    width = Screen:getWidth(),
-    height = Screen:getHeight(),
     title_shrink_font_to_fit = true,
 }
 
@@ -93,19 +91,11 @@ end
 
 -- Builds the root list of catalogs
 function OPDSBrowser:genItemTableFromRoot()
-    local item_table = {
-        {   -- calibre is the first and non-deletable item
-            text       = self.calibre_name,
-            url        = self.calibre_opds.host and self.calibre_opds.port and
-                         string.format("http://%s:%d/opds", self.calibre_opds.host, self.calibre_opds.port),
-            username   = self.calibre_opds.username,
-            password   = self.calibre_opds.password,
-            searchable = false,
-        },
-    }
+    local item_table = {}
     for _, server in ipairs(self.opds_servers) do
         table.insert(item_table, {
             text       = server.title,
+            mandatory  = server.username and "\u{f2c0}",
             url        = server.url,
             username   = server.username,
             password   = server.password,
@@ -116,33 +106,32 @@ function OPDSBrowser:genItemTableFromRoot()
 end
 
 -- Shows dialog to edit properties of the new/existing catalog
-function OPDSBrowser:addEditCatalog(item, is_calibre)
+function OPDSBrowser:addEditCatalog(item)
+    local fields = {
+        {
+            hint = _("Catalog name"),
+        },
+        {
+            hint = _("Catalog URL"),
+        },
+        {
+            hint = _("Username (optional)"),
+        },
+        {
+            hint = _("Password (optional)"),
+            text_type = "password",
+        },
+    }
     local title
-    local fields = {{}, {}, {}, {}}
-    if is_calibre then
-        title = _("Edit local calibre host and port")
-        fields[1].text = self.calibre_opds.host or "192.168.1.1"
-        fields[1].hint = _("calibre host")
-        fields[2].text = self.calibre_opds.port and tostring(self.calibre_opds.port) or "8080"
-        fields[2].hint = _("calibre port")
-        fields[3].text = self.calibre_opds.username
-        fields[4].text = self.calibre_opds.password
+    if item then
+        title = _("Edit OPDS catalog")
+        fields[1].text = item.text
+        fields[2].text = item.url
+        fields[3].text = item.username
+        fields[4].text = item.password
     else
-        fields[1].hint = _("Catalog name")
-        fields[2].hint = _("Catalog URL")
-        if item then
-            title = _("Edit OPDS catalog")
-            fields[1].text = item.text
-            fields[2].text = item.url
-            fields[3].text = item.username
-            fields[4].text = item.password
-        else
-            title = _("Add OPDS catalog")
-        end
+        title = _("Add OPDS catalog")
     end
-    fields[3].hint = _("Username (optional)")
-    fields[4].hint = _("Password (optional)")
-    fields[4].text_type = "password"
 
     local dialog
     dialog = MultiInputDialog:new{
@@ -155,19 +144,14 @@ function OPDSBrowser:addEditCatalog(item, is_calibre)
                     id = "close",
                     callback = function()
                         UIManager:close(dialog)
-                    end
+                    end,
                 },
                 {
                     text = _("Save"),
                     callback = function()
-                        local dialog_fields = dialog:getFields()
-                        if is_calibre then
-                            self:editCalibreFromInput(dialog_fields)
-                        else
-                            self:editCatalogFromInput(dialog_fields, item)
-                        end
+                        self:editCatalogFromInput(dialog:getFields(), item)
                         UIManager:close(dialog)
-                    end
+                    end,
                 },
             },
         },
@@ -233,17 +217,6 @@ function OPDSBrowser:editCatalogFromInput(fields, item, no_init)
     if not no_init then
         self:init()
     end
-end
-
--- Saves calibre properties from input dialog
-function OPDSBrowser:editCalibreFromInput(fields)
-    self.calibre_opds.host     = fields[1]
-    if tonumber(fields[2]) then
-        self.calibre_opds.port = fields[2]
-    end
-    self.calibre_opds.username = fields[3] ~= "" and fields[3] or nil
-    self.calibre_opds.password = fields[4]
-    self:init()
 end
 
 -- Deletes catalog from the root list
@@ -395,20 +368,11 @@ function OPDSBrowser:genItemTableFromCatalog(catalog, item_url)
     end
     item_table.hrefs = hrefs
 
-    if not feed.entry then
-        if #hrefs == 0 then
-            UIManager:show(InfoMessage:new{
-                text = _("Failed to parse the catalog."),
-            })
-        end
-        return item_table
-    end
-
-    for _, entry in ipairs(feed.entry) do
+    for _, entry in ipairs(feed.entry or {}) do
         local item = {}
         item.acquisitions = {}
         if entry.link then
-            for _, link in ipairs(entry.link) do
+            for __, link in ipairs(entry.link) do
                 local link_href = build_href(link.href)
                 if link.type and link.type:find(self.catalog_type)
                         and (not link.rel
@@ -422,7 +386,11 @@ function OPDSBrowser:genItemTableFromCatalog(catalog, item_url)
                 -- a publication. Arxiv uses title. Specifically, it uses
                 -- a title attribute that contains pdf. (title="pdf")
                 if link.rel or link.title then
-                    if link.rel:match(self.acquisition_rel) then
+                    if link.rel == self.borrow_rel then
+                        table.insert(item.acquisitions, {
+                            type = "borrow",
+                        })
+                    elseif link.rel and link.rel:match(self.acquisition_rel) then
                         table.insert(item.acquisitions, {
                             type  = link.type,
                             href  = link_href,
@@ -447,9 +415,9 @@ function OPDSBrowser:genItemTableFromCatalog(catalog, item_url)
                                 count = count,
                             })
                         end
-                    elseif link.rel == self.thumbnail_rel then
+                    elseif link.rel == self.thumbnail_rel or link.rel == self.thumbnail_rel_alt then
                         item.thumbnail = link_href
-                    elseif link.rel == self.image_rel then
+                    elseif link.rel == self.image_rel or link.rel == self.image_rel_alt then
                         item.image = link_href
                     end
                     -- This statement grabs the catalog items that are
@@ -478,9 +446,6 @@ function OPDSBrowser:genItemTableFromCatalog(catalog, item_url)
             if type(entry.title.type) == "string" and entry.title.div ~= "" then
                 title = entry.title.div
             end
-        end
-        if title == "Unknown" then
-            logger.info("Cannot handle title", entry.title)
         end
         item.text = title
         local author = "Unknown Author"
@@ -582,15 +547,14 @@ function OPDSBrowser:showDownloads(item)
     end
     local filename_orig = filename
 
-    local function createTitle(path, file) -- title for ButtonDialogTitle
+    local function createTitle(path, file) -- title for ButtonDialog
         return T(_("Download folder:\n%1\n\nDownload filename:\n%2\n\nDownload file type:"),
             BD.dirpath(path), file)
     end
 
-    local buttons = {} -- buttons for ButtonDialogTitle
+    local buttons = {} -- buttons for ButtonDialog
     local stream_buttons -- page stream buttons
     local download_buttons = {} -- file type download buttons
-
     for i, acquisition in ipairs(acquisitions) do -- filter out unsupported file types
         if acquisition.count then
             stream_buttons = {
@@ -611,6 +575,11 @@ function OPDSBrowser:showDownloads(item)
                     end,
                 },
             }
+        elseif acquisition.type == "borrow" then
+            table.insert(download_buttons, {
+                text = _("Borrow"),
+                enabled = false,
+            })
         else
             local filetype = util.getFileNameSuffix(acquisition.href)
             logger.dbg("Filetype for download is", filetype)
@@ -701,11 +670,13 @@ function OPDSBrowser:showDownloads(item)
             end,
         },
     })
+    local cover_link = item.image or item.thumbnail
     table.insert(buttons, {
         {
-            text = _("Cancel"),
+            text = _("Book cover"),
+            enabled = cover_link and true or false,
             callback = function()
-                UIManager:close(self.download_dialog)
+                OPDSPSE:streamPages(cover_link, 1, false, self.root_catalog_username, self.root_catalog_password)
             end,
         },
         {
@@ -723,7 +694,7 @@ function OPDSBrowser:showDownloads(item)
         },
     })
 
-    self.download_dialog = ButtonDialogTitle:new{
+    self.download_dialog = ButtonDialog:new{
         title = createTitle(self.getCurrentDownloadDir(), filename),
         buttons = buttons,
     }
@@ -837,9 +808,8 @@ end
 -- Menu action on item long-press (dialog Edit / Delete catalog)
 function OPDSBrowser:onMenuHold(item)
     if #self.paths > 0 then return end -- not root list
-    local is_calibre = item.text == self.calibre_name
     local dialog
-    dialog = ButtonDialogTitle:new{
+    dialog = ButtonDialog:new{
         title = item.text,
         title_align = "center",
         buttons = {
@@ -848,12 +818,11 @@ function OPDSBrowser:onMenuHold(item)
                     text = _("Edit"),
                     callback = function()
                         UIManager:close(dialog)
-                        self:addEditCatalog(item, is_calibre)
+                        self:addEditCatalog(item)
                     end,
                 },
                 {
                     text = _("Delete"),
-                    enabled = not is_calibre,
                     callback = function()
                         UIManager:show(ConfirmBox:new{
                             text = _("Delete OPDS catalog?"),

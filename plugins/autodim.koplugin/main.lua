@@ -55,7 +55,7 @@ function AutoDim:getAutoDimMenu()
                 text_func = function()
                     return self.autodim_starttime_m <= 0 and _("Idle time for dimmer") or
                     T(_("Idle time for dimmer: %1"),
-                        datetime.secondsToClockDuration("modern", self.autodim_starttime_m * 60, false, true, false, true))
+                        datetime.secondsToClockDuration("letters", self.autodim_starttime_m * 60, false, false, true))
                 end,
                 checked_func = function() return self.autodim_starttime_m > 0 end,
                 callback = function(touchmenu_instance)
@@ -94,7 +94,7 @@ function AutoDim:getAutoDimMenu()
             {
                 text_func = function()
                     return T(_("Dimmer duration: %1"),
-                        datetime.secondsToClockDuration("modern", self.autodim_duration_s, false, true, false, true))
+                        datetime.secondsToClockDuration("letters", self.autodim_duration_s, false, false, true))
                 end,
                 enabled_func = function() return self.autodim_starttime_m > 0 end,
                 callback = function(touchmenu_instance)
@@ -212,44 +212,14 @@ function AutoDim:_onResume()
     self:_schedule_autodim_task()
 end
 
-function AutoDim:_onEnterStandby()
-    self:_unschedule_autodim_task()
-    -- don't unschedule ramp task, as this is done in onLeaveStandby if necessary
-end
-
-function AutoDim:_onLeaveStandby()
-    if self.isCurrentlyDimming then
-        if self.last_ramp_scheduling_time then
-            -- we are during the ramp down
-            local now = UIManager:getElapsedTimeSinceBoot()
-            local next_ramp_time_s = self.last_ramp_scheduling_time + time.s(self.autodim_step_time_s) - now
-            self:_unschedule_ramp_task() -- self.last_ramp_scheduling_time gets deleted with this call
-            self.isCurrentlyDimming = true -- as this gets deleted by `_unschedule_ramp_task()`
-            if next_ramp_time_s <= 0 then -- only happens, when standby is ended by a scheduled ramp_task()
-                self:ramp_task()
-            else
-                self:_schedule_ramp_task(time.to_s(next_ramp_time_s))
-            end
-        else
-            self:_unschedule_ramp_task()
-        end
-    else
-        self:autodim_task() -- check times and reschedule autodim_task if necessary
-    end
-end
-
 function AutoDim:setEventHandlers()
     self.onResume = self._onResume
     self.onSuspend = self._onSuspend
-    self.onEnterStandby = self._onEnterStandby
-    self.onLeaveStandby = self._onLeaveStandby
 end
 
 function AutoDim:clearEventHandlers()
     self.onResume = nil
     self.onSuspend = nil
-    self.onEnterStandby = nil
-    self.onLeaveStandby = nil
 end
 
 function AutoDim:onFrontlightTurnedOff()

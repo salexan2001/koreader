@@ -1,16 +1,13 @@
 local DocumentRegistry = require("document/documentregistry")
 local DocSettings = require("docsettings")
-local ReadHistory = require("readhistory")
-local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local ffiutil = require("ffi/util")
 local md5 = require("ffi/sha2").md5
 local util = require("util")
 local _ = require("gettext")
-local T = require("ffi/util").template
+local T = ffiutil.template
 
 local MyClipping = {
     my_clippings = "/mnt/us/documents/My Clippings.txt",
-    history_dir = "./history",
 }
 
 function MyClipping:new(o)
@@ -303,48 +300,41 @@ function MyClipping:parseHighlight(highlights, bookmarks, book)
     end
 end
 
-function MyClipping:parseHistoryFile(clippings, history_file, doc_file)
-    if lfs.attributes(history_file, "mode") ~= "file"
-    or not history_file:find(".+%.lua$") then
-        return
-    end
-    if lfs.attributes(doc_file, "mode") ~= "file" then return end
-    local ok, stored = pcall(dofile, history_file)
-    if ok then
-        if not stored then
-            logger.warn("An empty history file ",
-                        history_file,
-                        "has been found. The book associated is ",
-                        doc_file)
-            return
-        elseif not stored.highlight then
-            return
-        end
-        local _, docname = util.splitFilePathName(doc_file)
-        local title, author = self:parseTitleFromPath(util.splitFileNameSuffix(docname), doc_file)
-        clippings[title] = {
-            file = doc_file,
-            title = title,
-            author = author,
-        }
-        self:parseHighlight(stored.highlight, stored.bookmarks, clippings[title])
-    end
+function MyClipping:getClippingsFromBook(clippings, doc_path)
+    local doc_settings = DocSettings:open(doc_path)
+    local highlights = doc_settings:readSetting("highlight")
+    if not highlights then return end
+    local bookmarks = doc_settings:readSetting("bookmarks")
+    local stats = doc_settings:readSetting("stats")
+    local title = stats and stats.title
+    local author = stats and stats.authors
+    local _, doc_name = util.splitFilePathName(doc_path)
+    local parsed_title, parsed_author = self:parseTitleFromPath(util.splitFileNameSuffix(doc_name))
+    clippings[parsed_title] = {
+        file = doc_path,
+        title = title or parsed_title,
+        author = author or parsed_author,
+    }
+    self:parseHighlight(highlights, bookmarks, clippings[parsed_title])
 end
 
 function MyClipping:parseHistory()
     local clippings = {}
-    for f in lfs.dir(self.history_dir) do
-        self:parseHistoryFile(clippings,
-                              self.history_dir .. "/" .. f,
-                              DocSettings:getPathFromHistory(f) .. "/" ..
-                              DocSettings:getNameFromHistory(f))
+    for _, item in ipairs(require("readhistory").hist) do
+        if not item.dim and DocSettings:hasSidecarFile(item.file) then
+            self:getClippingsFromBook(clippings, item.file)
+        end
     end
-    for _, item in ipairs(ReadHistory.hist) do
-        self:parseHistoryFile(clippings,
-                              DocSettings:getSidecarFile(item.file),
-                              item.file)
-    end
+    return clippings
+end
 
+function MyClipping:parseFiles(files)
+    local clippings = {}
+    for file in pairs(files) do
+        if DocSettings:hasSidecarFile(file) then
+            self:getClippingsFromBook(clippings, file)
+        end
+    end
     return clippings
 end
 
@@ -388,8 +378,8 @@ function MyClipping:getDocMeta(view)
     end
     return {
         title = title,
-        -- To make sure that export doesn't fail due to unsupported charchters.
-        exportable_title = parsed_title,
+        -- Replaces characters that are invalid in filenames.
+        output_filename = util.getSafeFilename(title),
         author = author,
         number_of_pages = number_of_pages,
         file = view.document.file,

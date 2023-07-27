@@ -15,6 +15,7 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util  = require("util")
 local _ = require("gettext")
+local N_ = _.ngettext
 local T = FFIUtil.template
 
 local FileManagerMenu = InputContainer:extend{
@@ -263,6 +264,17 @@ function FileManagerMenu:setUpdateItemTable()
                 text = _("History settings"),
                 sub_item_table = {
                     {
+                        text = _("Shorten date/time"),
+                        checked_func = function()
+                            return G_reader_settings:isTrue("history_datetime_short")
+                        end,
+                        callback = function()
+                            G_reader_settings:flipNilOrFalse("history_datetime_short")
+                            require("readhistory"):reload(true)
+                        end,
+                        separator = true,
+                    },
+                    {
                         text = _("Clear history of deleted files"),
                         callback = function()
                             UIManager:show(ConfirmBox:new{
@@ -395,7 +407,7 @@ To:
                     UIManager:show(items)
                 end,
             },
-        }
+        },
     }
 
     for _, widget in pairs(self.registered_widgets) do
@@ -405,23 +417,61 @@ To:
         end
     end
 
-    self.menu_items.sort_by = self.ui:getSortingMenuTable()
+    self.menu_items.sort_by = self:getSortingMenuTable()
     self.menu_items.reverse_sorting = {
         text = _("Reverse sorting"),
-        checked_func = function() return self.ui.file_chooser.reverse_collate end,
-        callback = function() self.ui:toggleReverseCollate() end
+        checked_func = function()
+            return G_reader_settings:isTrue("reverse_collate")
+        end,
+        callback = function()
+            G_reader_settings:flipNilOrFalse("reverse_collate")
+            self.ui.file_chooser:refreshPath()
+        end,
     }
-    self.menu_items.start_with = self.ui:getStartWithMenuTable()
+    self.menu_items.sort_mixed = {
+        text = _("Folders and files mixed"),
+        enabled_func = function()
+            local collate = G_reader_settings:readSetting("collate")
+            return collate ~= "size" and
+                   collate ~= "type" and
+                   collate ~= "percent_unopened_first" and
+                   collate ~= "percent_unopened_last"
+        end,
+        checked_func = function()
+            local collate = G_reader_settings:readSetting("collate")
+            return G_reader_settings:isTrue("collate_mixed") and
+                   collate ~= "size" and
+                   collate ~= "type" and
+                   collate ~= "percent_unopened_first" and
+                   collate ~= "percent_unopened_last"
+        end,
+        callback = function()
+            G_reader_settings:flipNilOrFalse("collate_mixed")
+            self.ui.file_chooser:refreshPath()
+        end,
+    }
+    self.menu_items.start_with = self:getStartWithMenuTable()
+
     if Device:supportsScreensaver() then
         self.menu_items.screensaver = {
             text = _("Screensaver"),
             sub_item_table = require("ui/elements/screensaver_menu"),
         }
     end
+
     -- insert common settings
     for id, common_setting in pairs(dofile("frontend/ui/elements/common_settings_menu_table.lua")) do
         self.menu_items[id] = common_setting
     end
+
+    -- settings tab - Document submenu
+    self.menu_items.document_metadata_location_move = {
+        text = _("Move book metadata"),
+        keep_menu_open = true,
+        callback = function()
+            self:moveBookMetadata()
+        end,
+    }
 
     -- tools tab
     self.menu_items.advanced_settings = {
@@ -491,7 +541,7 @@ To:
                     end
                 end,
             },
-        }
+        },
     }
     if Device:isKobo() and not Device:isSunxi() then
         table.insert(self.menu_items.developer_options.sub_item_table, {
@@ -655,8 +705,8 @@ To:
                     G_reader_settings:flipNilOrFalse("dev_reverse_ui_text_direction")
                     UIManager:askForRestart()
                 end
-            }
-        }
+            },
+        },
     })
     table.insert(self.menu_items.developer_options.sub_item_table, {
         text_func = function()
@@ -789,6 +839,144 @@ dbg:guard(FileManagerMenu, 'setUpdateItemTable',
             widget:addToMainMenu(mock_menu_items)
         end
     end)
+
+function FileManagerMenu:getSortingMenuTable()
+    local collates = {
+        { _("name"), "strcoll" },
+        { _("name (natural sorting)"), "natural" },
+        { _("last read date"), "access" },
+        { _("date modified"), "date" },
+        { _("size"), "size" },
+        { _("type"), "type" },
+        { _("percent – unopened first"), "percent_unopened_first" },
+        { _("percent – unopened last"), "percent_unopened_last" },
+    }
+    local sub_item_table = {}
+    for i, v in ipairs(collates) do
+        table.insert(sub_item_table, {
+            text = v[1],
+            checked_func = function()
+                return v[2] == G_reader_settings:readSetting("collate", "strcoll")
+            end,
+            callback = function()
+                G_reader_settings:saveSetting("collate", v[2])
+                self.ui.file_chooser:refreshPath()
+            end,
+        })
+    end
+    return {
+        text_func = function()
+            local collate = G_reader_settings:readSetting("collate")
+            for i, v in ipairs(collates) do
+                if v[2] == collate then
+                    return T(_("Sort by: %1"), v[1])
+                end
+            end
+        end,
+        sub_item_table = sub_item_table,
+    }
+end
+
+function FileManagerMenu:getStartWithMenuTable()
+    local start_withs = {
+        { _("file browser"), "filemanager" },
+        { _("history"), "history" },
+        { _("favorites"), "favorites" },
+        { _("folder shortcuts"), "folder_shortcuts" },
+        { _("last file"), "last" },
+    }
+    local sub_item_table = {}
+    for i, v in ipairs(start_withs) do
+        table.insert(sub_item_table, {
+            text = v[1],
+            checked_func = function()
+                return v[2] == G_reader_settings:readSetting("start_with", "filemanager")
+            end,
+            callback = function()
+                G_reader_settings:saveSetting("start_with", v[2])
+            end,
+        })
+    end
+    return {
+        text_func = function()
+            local start_with = G_reader_settings:readSetting("start_with") or "filemanager"
+            for i, v in ipairs(start_withs) do
+                if v[2] == start_with then
+                    return T(_("Start with: %1"), v[1])
+                end
+            end
+        end,
+        sub_item_table = sub_item_table,
+    }
+end
+
+function FileManagerMenu:moveBookMetadata()
+    local DocSettings = require("docsettings")
+    local FileChooser = self.ui.file_chooser
+    local function scanPath()
+        local sys_folders = { -- do not scan sys_folders
+            ["/dev"]  = true,
+            ["/proc"] = true,
+            ["/sys"]  = true,
+        }
+        local books_to_move = {}
+        local dirs = {FileChooser.path}
+        while #dirs ~= 0 do
+            local new_dirs = {}
+            for _, d in ipairs(dirs) do
+                local ok, iter, dir_obj = pcall(lfs.dir, d)
+                if ok then
+                    for f in iter, dir_obj do
+                        local fullpath = "/" .. f
+                        if d ~= "/" then
+                            fullpath = d .. fullpath
+                        end
+                        local attributes = lfs.attributes(fullpath) or {}
+                        if attributes.mode == "directory" and f ~= "." and f ~= ".."
+                                and FileChooser:show_dir(f) and not sys_folders[fullpath] then
+                            table.insert(new_dirs, fullpath)
+                        elseif attributes.mode == "file" and not util.stringStartsWith(f, "._")
+                                and FileChooser:show_file(f) and DocSettings:hasSidecarFile(fullpath)
+                                and lfs.attributes(DocSettings:getSidecarFile(fullpath), "mode") ~= "file" then
+                            table.insert(books_to_move, fullpath)
+                        end
+                    end
+                end
+            end
+            dirs = new_dirs
+        end
+        return books_to_move
+    end
+    UIManager:show(ConfirmBox:new{
+        text = _("Scan books in current folder and subfolders for their metadata location?"),
+        ok_text = _("Scan"),
+        ok_callback = function()
+            local books_to_move = scanPath()
+            local books_to_move_nb = #books_to_move
+            if books_to_move_nb == 0 then
+                local InfoMessage = require("ui/widget/infomessage")
+                UIManager:show(InfoMessage:new{
+                    text = _("No books with metadata not in your preferred location found."),
+                })
+            else
+                UIManager:show(ConfirmBox:new{
+                    text = T(N_("1 book with metadata not in your preferred location found.",
+                              "%1 books with metadata not in your preferred location found.",
+                              books_to_move_nb), books_to_move_nb) .. "\n" ..
+                              _("Move book metadata to your preferred location?"),
+                    ok_text = _("Move"),
+                    ok_callback = function()
+                        UIManager:close(self.menu_container)
+                        for _, book in ipairs(books_to_move) do
+                            DocSettings:updateLocation(book, book)
+                        end
+                        FileChooser:refreshPath()
+                    end,
+                })
+            end
+        end,
+    })
+end
 
 function FileManagerMenu:exitOrRestart(callback, force)
     UIManager:close(self.menu_container)

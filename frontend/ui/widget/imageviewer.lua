@@ -40,6 +40,7 @@ local ImageViewer = InputContainer:extend{
     -- the image_disposable provided here.
     -- Each BlitBuffer in the table (or returned by functions) will be free'd
     -- if the table itself has an image_disposable field set to true.
+    images_list_nb = nil, -- if set, overrides #self.image
 
     -- With images list, when switching image, whether to keep previous
     -- image pan & zoom
@@ -142,7 +143,7 @@ function ImageViewer:init()
             self.image = self.image()
         end
         self._images_list_cur = 1
-        self._images_list_nb = #self._images_list
+        self._images_list_nb = self.images_list_nb or #self._images_list
         self._images_orig_scale_factor = self.scale_factor
         -- also swap disposable status
         self._images_list_disposable = self.image_disposable
@@ -271,12 +272,9 @@ function ImageViewer:init()
         end
     end
 
-    if self._images_list then
+    if self._images_list and self._images_list_nb > 1 then
         -- progress bar
-        local percent = 1
-        if self._images_list and self._images_list_nb > 1 then
-            percent = (self._images_list_cur - 1) / (self._images_list_nb - 1)
-        end
+        local percent = (self._images_list_cur - 1) / (self._images_list_nb - 1)
         self.progress_bar = ProgressWidget:new{
             width = self.width - 2*self.button_padding,
             height = Screen:scaleBySize(5),
@@ -346,11 +344,8 @@ function ImageViewer:update()
     -- Image container (we'll insert it once all others are added and we know the height remaining)
     local image_container_idx = #self.frame_elements + 1
     -- Progress bar
-    if self._images_list then
-        local percent = 1
-        if self._images_list_nb > 1 then
-            percent = (self._images_list_cur - 1) / (self._images_list_nb - 1)
-        end
+    if self._images_list and self._images_list_nb > 1 then
+        local percent = (self._images_list_cur - 1) / (self._images_list_nb - 1)
         self.progress_bar:setPercentage(percent)
         table.insert(self.frame_elements, self.progress_container)
     end
@@ -431,6 +426,7 @@ function ImageViewer:_new_image_wg()
         file = self.file,
         image = self.image,
         image_disposable = false, -- we may re-use self.image
+        file_do_cache = false,
         alpha = true, -- we might be showing images with an alpha channel (e.g., from Wikipedia)
         width = max_image_w,
         height = max_image_h,
@@ -846,7 +842,7 @@ function ImageViewer:onCloseWidget()
             self.captioned_title_bar:free()
         end
     end
-    if self._images_list then
+    if self._images_list and self._images_list_nb > 1 then
         self.progress_container:free()
     end
     self.button_container:free()

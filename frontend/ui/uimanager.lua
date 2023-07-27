@@ -102,7 +102,8 @@ function UIManager:init()
         end)
     end
 
-    Device:_setEventHandlers(self)
+    -- Tell Device that we're now available, so that it can setup PM event handlers
+    Device:_UIManagerReady(self)
 
     -- A simple wrapper for UIManager:quit()
     -- This may be overwritten by setRunForeverMode(); for testing purposes
@@ -243,6 +244,16 @@ function UIManager:close(widget, refreshtype, refreshregion, refreshdither)
     end
 end
 
+--- Shift the execution times of all scheduled tasks.
+-- UIManager uses CLOCK_MONOTONIC (which doesn't tick during standby), so shifting the execution
+-- time by a negative value will lead to an execution at the expected time.
+-- @param time if positive execute the tasks later, if negative they should be executed earlier
+function UIManager:shiftScheduledTasksBy(shift_time)
+    for i, v in ipairs(self._task_queue) do
+        v.time = v.time + shift_time
+    end
+end
+
 -- Schedule an execution task; task queue is in descending order
 function UIManager:schedule(sched_time, action, ...)
     local lo, hi = 1, #self._task_queue
@@ -351,7 +362,7 @@ function UIManager:debounce(seconds, immediate, action)
         else
             is_scheduled = false
             if not immediate then
-                result = action(unpack(args))
+                result = action(unpack(args, 1, args.n))
             end
             if not is_scheduled then
                 -- This check is needed because action can recursively call debounced_action_wrapper
@@ -366,7 +377,7 @@ function UIManager:debounce(seconds, immediate, action)
             self:scheduleIn(seconds, scheduled_action)
             is_scheduled = true
             if immediate then
-                result = action(unpack(args))
+                result = action(unpack(args, 1, args.n))
             end
         end
         return result
@@ -977,7 +988,7 @@ function UIManager:_checkTasks()
             -- NOTE: Said task's action might modify _task_queue.
             --       To avoid race conditions and catch new upcoming tasks during this call,
             --       we repeatedly check the head of the queue (c.f., #1758).
-            task.action(unpack(task.args))
+            task.action(unpack(task.args, 1, task.args.n))
         else
             -- As the queue is sorted in descending order, it's safe to assume all items are currently future tasks.
             wait_until = task_time
@@ -1123,7 +1134,7 @@ function UIManager:_refresh(mode, region, dither)
     --       (Putting "ui" in that list is problematic with a number of UI elements, most notably, ReaderHighlight,
     --       because it is implemented as "ui" over the full viewport, since we can't devise a proper bounding box).
     --       So we settle for only "partial", but treating full-screen ones slightly differently.
-    if mode == "partial" and not self.refresh_counted then
+    if mode == "partial" and self.FULL_REFRESH_COUNT > 0 and not self.refresh_counted then
         self.refresh_count = (self.refresh_count + 1) % self.FULL_REFRESH_COUNT
         if self.refresh_count == self.FULL_REFRESH_COUNT - 1 then
             -- NOTE: Promote to "full" if no region (reader), to "flashui" otherwise (UI)
@@ -1288,6 +1299,11 @@ end
 --- Explicitly drain the paint & refresh queues *now*, instead of waiting for the next UI tick.
 function UIManager:forceRePaint()
     self:_repaint()
+end
+
+function UIManager:avoidFlashOnNextRepaint()
+    -- Avoid going through the "partial" to "full" refresh promotion: pretend we already checked that.
+    self.refresh_counted = true
 end
 
 --[[--
@@ -1533,9 +1549,6 @@ This is the main loop of the UI controller.
 It is intended to manage input events and delegate them to dialogs.
 --]]
 function UIManager:run()
-    -- Tell PowerD that we're ready
-    Device:getPowerDevice():readyUI()
-
     self:initLooper()
     -- currently there is no Turbo support for Windows
     -- use our own main loop

@@ -125,7 +125,7 @@ function TextBoxWidget:init()
     self.line_height_px = Math.round( (1 + self.line_height) * self.face.size )
     -- Get accurate initial baseline and possible height overflow (so our bb
     -- is tall enough to draw glyphs with descender larger than line height)
-    local face_height, face_ascender = self.face.ftface:getHeightAndAscender()
+    local face_height, face_ascender = self.face.ftsize:getHeightAndAscender()
     local line_heights_diff = math.floor(self.line_height_px - face_height)
     if line_heights_diff >= 0 then
         -- Glyphs will fit in our line_height_px: adjust baseline.
@@ -1084,7 +1084,7 @@ function TextBoxWidget:getVisibleHeightRatios()
 end
 
 -- Helper function to be used before intanstiating a TextBoxWidget instance
-function TextBoxWidget:getFontSizeToFitHeight(height_px, nb_lines, line_height_em)
+function TextBoxWidget:getFontSizeToFitHeight(height_px, nb_lines, line_height_em, font_face, font_bold)
     -- Get a font size that would fit nb_lines in height_px.
     -- A font with the returned size should then be provided
     -- to TextBoxWidget:new() (as well as the line_height_em given
@@ -1101,6 +1101,32 @@ function TextBoxWidget:getFontSizeToFitHeight(height_px, nb_lines, line_height_e
     local font_size = math.floor(face_size * 1000000 / Screen:scaleBySize(1000000)) -- invert scaleBySize
     if Screen:scaleBySize(font_size) > face_size then -- be really sure we won't get it larger
         font_size = font_size - 1
+    end
+    -- Because of self.line_glyph_extra_height added to the final bb, the font_size we got
+    -- up to here can still generate a TextBoxWidget taller than the provided height_px,
+    -- which might be good enough for some usages.
+    -- If better accuracy is needed, provide (..., font_face, font_bold) so we can return
+    -- a better font_size for the font that will be used.
+    if font_face then
+        while true do
+            -- As done in TextBoxWidget:init():
+            local line_height_px = Math.round( (1 + line_height_em) * Screen:scaleBySize(font_size) )
+            local face = Font:getFace(font_face, font_size)
+            face = Font:getAdjustedFace(face, font_bold)
+            local face_height = face.ftsize:getHeightAndAscender()
+            local line_heights_diff = math.floor(line_height_px - face_height)
+            if line_heights_diff >= 0 then
+                break
+            end
+            local line_glyph_extra_height = -line_heights_diff
+            if line_height_px * nb_lines + line_glyph_extra_height <= height_px then
+                break
+            end
+            if font_size <= 1 then
+                break
+            end
+            font_size = font_size - 1
+        end
     end
     return font_size
 end
@@ -2012,7 +2038,10 @@ function TextBoxWidget:onHoldReleaseText(callback, ges)
 
         logger.dbg("onHoldReleaseText (duration:", time.format_time(hold_duration), ") :",
                         sel_start_idx, ">", sel_end_idx, "=", selected_text)
-        callback(selected_text, hold_duration)
+        -- We give index in the charlist (unicode chars), and provide a function
+        -- to convert these indices as in the utf8 text, to be used by caller
+        -- only if needed, as it may be expensive.
+        callback(selected_text, hold_duration, sel_start_idx, sel_end_idx, function(idx) return self:getSourceIndex(idx) end)
         return true
     end
 
@@ -2029,7 +2058,7 @@ function TextBoxWidget:onHoldReleaseText(callback, ges)
 
     local selected_text = table.concat(self.charlist, "", sel_start_idx, sel_end_idx)
     logger.dbg("onHoldReleaseText (duration:", time.format_time(hold_duration), ") :", sel_start_idx, ">", sel_end_idx, "=", selected_text)
-    callback(selected_text, hold_duration)
+    callback(selected_text, hold_duration, sel_start_idx, sel_end_idx, function(idx) return self:getSourceIndex(idx) end)
     return true
 end
 
@@ -2083,6 +2112,16 @@ function TextBoxWidget:_findWordEdge(x, y, side)
         idx = idx + 1
     end
     return edge_idx
+end
+
+function TextBoxWidget:getSourceIndex(char_idx)
+    if self._xtext then
+        local utf8 = self._xtext:getText(1, char_idx)
+        return #utf8
+    else
+        local utf8 = table.concat(self.charlist, "", 1, char_idx)
+        return #utf8
+    end
 end
 
 return TextBoxWidget

@@ -1,4 +1,4 @@
--- need low-level mechnism to detect android to avoid recursive dependency
+-- need low-level mechanism to detect android to avoid recursive dependency
 local isAndroid, android = pcall(require, "android")
 local lfs = require("libs/libkoreader-lfs")
 
@@ -20,15 +20,22 @@ function DataStorage:getDataDir()
     elseif os.getenv("APPIMAGE") or os.getenv("KO_MULTIUSER") then
         if os.getenv("XDG_CONFIG_HOME") then
             data_dir = string.format("%s/%s", os.getenv("XDG_CONFIG_HOME"), "koreader")
+            if lfs.attributes(os.getenv("XDG_CONFIG_HOME"), "mode") ~= "directory" then
+                lfs.mkdir(os.getenv("XDG_CONFIG_HOME"))
+            end
         else
-            local user_rw = jit.os == "OSX" and "Library/Application Support" or ".config"
-            data_dir = string.format("%s/%s/%s", os.getenv("HOME"), user_rw, "koreader")
+            local user_rw = string.format("%s/%s", os.getenv("HOME"), jit.os == "OSX" and "Library/Application Support" or ".config")
+            if lfs.attributes(user_rw, "mode") ~= "directory" then
+                lfs.mkdir(user_rw)
+            end
+            data_dir = string.format("%s/%s", user_rw, "koreader")
         end
     else
         data_dir = "."
     end
     if lfs.attributes(data_dir, "mode") ~= "directory" then
-        lfs.mkdir(data_dir)
+        local ok, err = lfs.mkdir(data_dir)
+        if not ok then error(err .. " " .. data_dir) end
     end
 
     return data_dir
@@ -42,6 +49,9 @@ function DataStorage:getSettingsDir()
     return self:getDataDir() .. "/settings"
 end
 
+function DataStorage:getDocSettingsDir()
+    return self:getDataDir() .. "/docsettings"
+end
 
 function DataStorage:getFullDataDir()
     if full_data_dir then return full_data_dir end
@@ -57,13 +67,23 @@ end
 
 local function initDataDir()
     local sub_data_dirs = {
-        "cache", "clipboard",
-        "data", "data/dict", "data/tessdata",
-        "history", "ota", "plugins",
-        "screenshots", "settings", "styletweaks",
+        "cache",
+        "clipboard",
+        "data",
+        "data/dict",
+        "data/tessdata",
+        -- "docsettings", -- created when needed
+        -- "history", -- legacy/obsolete sidecar files
+        "ota",
+        -- "patches", -- must be created manually by the interested user
+        "plugins",
+        "screenshots",
+        "settings",
+        "styletweaks",
     }
+    local datadir = DataStorage:getDataDir()
     for _, dir in ipairs(sub_data_dirs) do
-        local sub_data_dir = string.format("%s/%s", DataStorage:getDataDir(), dir)
+        local sub_data_dir = string.format("%s/%s", datadir, dir)
         if lfs.attributes(sub_data_dir, "mode") ~= "directory" then
             lfs.mkdir(sub_data_dir)
         end

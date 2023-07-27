@@ -389,7 +389,7 @@ end
 
 function MenuDialog:onShow()
     UIManager:setDirty(self, function()
-        return "flashui", self[1][1].dimen
+        return "flashui", self[1][1].dimen -- i.e., FrameContainer
     end)
 end
 
@@ -435,7 +435,7 @@ function MenuDialog:onConfigChoose(values, name, event, args, position)
                 self:onChangeContextStatus(args, position)
             end
         end
-        UIManager:setDirty(nil, "ui", nil, true)
+        UIManager:setDirty(nil, "ui")
     end)
 end
 
@@ -532,7 +532,6 @@ function WordInfoDialog:init()
     self.book_title_button = Button:new{
         text = self.book_title .. book_title_triangle,
         width = width,
-        max_width = width,
         text_font_face = "NotoSans-Italic.ttf",
         text_font_size = 14,
         text_font_bold = false,
@@ -622,7 +621,7 @@ end
 
 function WordInfoDialog:onShow()
     UIManager:setDirty(self, function()
-        return "flashui", self[1][1].dimen
+        return "flashui", self[1][1].dimen -- i.e., MovableContainer
     end)
 end
 
@@ -755,7 +754,6 @@ function VocabItemWidget:initItemWidget()
         self.forgot_button = Button:new{
             text = _("Forgot"),
             width = self.review_button_width,
-            max_width = self.review_button_width,
             radius = Size.radius.button,
             callback = function()
                 self:onForgot()
@@ -770,7 +768,6 @@ function VocabItemWidget:initItemWidget()
                 self:onGotIt()
             end,
             width = self.review_button_width,
-            max_width = self.review_button_width,
             show_parent = self,
         }
         right_widget = HorizontalGroup:new{
@@ -945,6 +942,7 @@ end
 
 function VocabItemWidget:resetProgress()
     self.item.review_count = 0
+    self.item.streak_count = 0
     self.item.due_time = os.time()
     self.item.review_time = self.item.due_time
     self.item.last_due_time = nil
@@ -1358,7 +1356,7 @@ function VocabularyBuilderWidget:refreshFooter()
     local sync_size = TextWidget:getFontSizeToFitHeight("cfont", footer_height, Size.padding.buttontable*2)
     self.footer_sync = Button:new{
         text = "⇅",
-        width = self.footer_left_corner_width - Size.padding.large * 2,
+        width = self.footer_left_corner_width,
         text_font_size = sync_size,
         text_font_bold = false,
         bordersize = 0,

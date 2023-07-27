@@ -213,7 +213,7 @@ function InfoMessage:onCloseWidget()
     end
 
     UIManager:setDirty(nil, function()
-        return "ui", self[1][1].dimen
+        return "ui", self.movable.dimen
     end)
 end
 
@@ -231,7 +231,7 @@ function InfoMessage:onShow()
     end
     -- set our region to be dirty, so UImanager will call our paintTo()
     UIManager:setDirty(self, function()
-        return "ui", self[1][1].dimen
+        return "ui", self.movable.dimen
     end)
     if self.flush_events_on_show then
         -- Discard queued and upcoming input events to avoid accidental dismissal
@@ -240,8 +240,7 @@ function InfoMessage:onShow()
     -- schedule us to close ourself if timeout provided
     if self.timeout then
         UIManager:scheduleIn(self.timeout, function()
-            -- In case we're provided with dismiss_callback, also call it
-            -- on timeout
+            -- In case we're provided with dismiss_callback, also call it on timeout
             if self.dismiss_callback then
                 self.dismiss_callback()
                 self.dismiss_callback = nil
@@ -254,7 +253,7 @@ end
 
 function InfoMessage:getVisibleArea()
     if not self.invisible then
-        return self[1][1].dimen
+        return self.movable.dimen
     end
 end
 

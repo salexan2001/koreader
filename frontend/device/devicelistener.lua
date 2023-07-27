@@ -186,14 +186,20 @@ if Device:hasFrontlight() then
 
     function DeviceListener:onToggleFrontlight()
         local powerd = Device:getPowerDevice()
-        powerd:toggleFrontlight()
         local new_text
         if powerd.is_fl_on then
-            new_text = _("Frontlight enabled.")
-        else
             new_text = _("Frontlight disabled.")
+        else
+            new_text = _("Frontlight enabled.")
         end
-        Notification:notify(new_text)
+        -- We defer displaying the Notification to PowerD, as the toggle may be a ramp, and we both want to make sure the refresh fencing won't affect it, and that we only display the Notification at the end...
+        local notif_source = Notification.notify_source
+        local notif_cb = function()
+            Notification:notify(new_text, notif_source)
+        end
+        if not powerd:toggleFrontlight(notif_cb) then
+            Notification:notify(_("Frontlight unchanged."), notif_source)
+        end
     end
 
     function DeviceListener:onShowFlDialog()

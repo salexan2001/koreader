@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+ANSI_GREEN="\033[32;1m"
+ANSI_RED="\033[31;1m"
+
 is_mac() {
     if [ "$(uname -s)" != "Darwin" ]; then
         echo "You need a mac to build this package"
@@ -16,15 +19,6 @@ fi
 
 # Default Android build to arm.
 ANDROID_ARCH="${ANDROID_ARCH:-arm}"
-
-# Default to Android 4.0+; required for NDK 15 but with a custom NDK the strict minimum is 9.
-if [[ "${ANDROID_ARCH}" == "arm64" ]] || [[ "${ANDROID_ARCH}" == "x86_64" ]]; then
-    # 64bit arches require at least ABI 21
-    NDKABI="${NDKABI:-21}"
-else
-    NDKABI="${NDKABI:-14}"
-fi
-export NDKABI
 
 # Default android flavor
 ANDROID_FLAVOR="${ANDROID_FLAVOR:-rocks}"
@@ -107,8 +101,6 @@ function setup_env() {
     SETUP_ENV_GREP_COMMAND="grep -z -v debug"
     if [ -n "${KODEBUG}" ]; then
         SETUP_ENV_GREP_COMMAND="grep -z debug"
-        # for android adb install
-        KODEBUG_SUFFIX=-debug
     fi
     local files=()
     while IFS= read -r -d $'\0'; do
@@ -144,9 +136,6 @@ function setup_env() {
     fi
     EMU_DIR="${files[${idx}]}/koreader"
     export EMU_DIR
-    KO_LD_LIBRARY_PATH="$(realpath "${EMU_DIR}")/libs:${LD_LIBRARY_PATH}"
-    # Don't export it to avoid messing with tools (e.g., debuggers).
-    # We'll pass it to LuaJIT via env
 }
 
 function kodev-fetch-thirdparty() {
@@ -263,21 +252,7 @@ ${SUPPORTED_TARGETS}"
             assert_ret_zero $?
             ;;
         android)
-            if [ -z "${NDK}" ]; then
-                if [ -n "${ANDROID_NDK_HOME}" ]; then
-                    # some distributions use `ANDROID_NDK` instead, fall back to it
-                    export NDK="${ANDROID_NDK_HOME}"
-                else
-                    export NDK="${CURDIR}/base/toolchain/android-ndk-r15c"
-                fi
-            fi
-            [ -e "${CURDIR}/base/toolchain/android-toolchain-${ANDROID_ARCH}/bin/" ] || {
-                { [ -e "${NDK}" ] || make -C "${CURDIR}/base/toolchain" android-ndk; }
-                assert_ret_zero $?
-                make android-toolchain
-                assert_ret_zero $?
-            }
-            echo "Using NDK: ${NDK}..."
+            make android-ndk || exit $?
             make TARGET=android
             assert_ret_zero $?
             ;;
@@ -549,14 +524,8 @@ ${SUPPORTED_RELEASE_TARGETS}"
             make TARGET=kindle-legacy update
             ;;
         android)
+            make android-sdk || exit $?
             kodev-build android
-            export PATH=${PATH}:${CURDIR}/base/toolchain/android-sdk-linux/tools
-            command -v android &>/dev/null || {
-                make -C "${CURDIR}/base/toolchain" android-sdk
-            }
-            ANDROID_HOME=$(dirname "$(dirname "$(command -v android)")")
-            export ANDROID_HOME
-            export PATH="${PATH}:${NDK}"
             make TARGET=android update
             ;;
         pocketbook)
@@ -808,18 +777,20 @@ TARGET:
                     kodev-release --ignore-translation android
                     assert_ret_zero $?
                 fi
-                setup_env
+                if [ -n "${KODEBUG}" ]; then
+                    KODEBUG_SUFFIX=-debug
+                fi
                 # clear logcat to get rid of useless cruft
                 adb logcat -c
                 # uninstall existing package to make sure *everything* is gone from memory
                 # no assert_ret_zero; uninstall is allowed to fail if there's nothing to uninstall
-                adb uninstall "org.koreader.launcher"
+                adb uninstall "org.koreader.launcher${KODEBUG_SUFFIX/-/.}"
                 adb install "koreader-android-${ANDROID_ARCH}${KODEBUG_SUFFIX}-${VERSION}.apk"
                 assert_ret_zero $?
                 # there's no adb run so we do this…
-                adb shell monkey -p org.koreader.launcher -c android.intent.category.LAUNCHER 1
+                adb shell monkey -p org.koreader.launcher${KODEBUG_SUFFIX/-/.} -c android.intent.category.LAUNCHER 1
                 assert_ret_zero $?
-                adb logcat KOReader:V luajit-launcher:V "*:E"
+                adb logcat KOReader:V luajit-launcher:V dlopen:V "*:E"
             } || echo "Failed to find adb in PATH to interact with Android device."
             ;;
         *)
@@ -844,7 +815,7 @@ TARGET:
             fi
 
             KOREADER_ARGS="-d"
-            KOREADER_COMMAND="env LD_LIBRARY_PATH=${KO_LD_LIBRARY_PATH} ./reader.lua ${KOREADER_ARGS}"
+            KOREADER_COMMAND="./reader.lua ${KOREADER_ARGS}"
 
             # run with catchsegv by default when it is available (unless no-catchsegv is enabled, c.f., #7036)
             # see https://github.com/koreader/koreader/issues/2878#issuecomment-326796777
@@ -855,7 +826,7 @@ TARGET:
             fi
 
             if [ -n "${valgrind}" ]; then
-                KOREADER_COMMAND="${valgrind} env LD_LIBRARY_PATH=${KO_LD_LIBRARY_PATH} ./luajit reader.lua ${KOREADER_ARGS}"
+                KOREADER_COMMAND="${valgrind} ./luajit reader.lua ${KOREADER_ARGS}"
             fi
 
             echo "[*] Running KOReader with arguments: $* ..."
@@ -869,9 +840,9 @@ TARGET:
                     # We don't want to stack valgrind/catchsegv on top of GDB ;).
                     if [[ "${gdb}" == gdb* ]]; then
                         # The standard CLI needs a little hand holding to properly pass arguments to the process it'll monitor
-                        KOREADER_COMMAND="${gdb} --args env LD_LIBRARY_PATH=${KO_LD_LIBRARY_PATH} ./luajit reader.lua ${KOREADER_ARGS} ${args}"
+                        KOREADER_COMMAND="${gdb} --args ./luajit reader.lua ${KOREADER_ARGS} ${args}"
                     else
-                        KOREADER_COMMAND="${gdb} env LD_LIBRARY_PATH=${KO_LD_LIBRARY_PATH} ./luajit reader.lua ${KOREADER_ARGS} ${args}"
+                        KOREADER_COMMAND="${gdb} ./luajit reader.lua ${KOREADER_ARGS} ${args}"
                     fi
                 else
                     KOREADER_COMMAND="${KOREADER_COMMAND} ${args}"
@@ -978,12 +949,74 @@ OPTIONS:
         fi
 
         echo "Running tests in" "${test_path}"
-        env LD_LIBRARY_PATH="${KO_LD_LIBRARY_PATH}" \
-            busted --lua="./luajit" "${opts}" \
+        busted --lua="./luajit" "${opts}" \
             --output=gtest \
             --lpath="${test_path_basedir}/?.lua" \
             --exclude-tags=notest "${test_path}"
     } && popd || exit
+}
+
+function kodev-check() {
+    exit_code=0
+    check_submodules
+
+    # shellcheck disable=2016
+    mapfile -t shellscript_locations < <({ git -c submodule.recurse=0 grep -lE '^#!(/usr)?/bin/(env )?(bash|sh)' | sed "/^plugins\/terminal.koplugin\/shfm$/d" && git submodule --quiet foreach '[ "$path" = "base" -o "$path" = "platform/android/luajit-launcher" ] || git grep -lE "^#!(/usr)?/bin/(env )?(bash|sh)" | sed "s|^|$path/|"' && git ls-files ./*.sh; } | sort | uniq)
+
+    SHFMT_OPTIONS="-i 4 -ci"
+
+    for shellscript in "${shellscript_locations[@]}"; do
+        echo -e "${ANSI_GREEN}Running shellcheck on ${shellscript}"
+        shellcheck "${shellscript}" || exit_code=1
+        echo -e "${ANSI_GREEN}Running shfmt on ${shellscript}"
+        # shellcheck disable=2086
+        if ! shfmt ${SHFMT_OPTIONS} -kp "${shellscript}" >/dev/null 2>&1; then
+            echo -e "${ANSI_RED}Warning: ${shellscript} contains the following problem:"
+            # shellcheck disable=2086
+            shfmt ${SHFMT_OPTIONS} -kp "${shellscript}" || exit_code=1
+            continue
+        fi
+        # shellcheck disable=2086
+        if [ "$(cat "${shellscript}")" != "$(shfmt ${SHFMT_OPTIONS} "${shellscript}")" ]; then
+            echo -e "${ANSI_RED}Warning: ${shellscript} does not abide by coding style, diff for expected style:"
+            # shellcheck disable=2086
+            shfmt ${SHFMT_OPTIONS} -d "${shellscript}" || exit_code=1
+        fi
+    done
+
+    echo -e "\\n${ANSI_GREEN}Checking for unscaled sizes"
+    # stick `|| true` at the end to prevent exit on failed command
+    unscaled_size_check=$(grep -nr --include=*.lua --exclude=koptoptions.lua --exclude-dir=base --exclude-dir=luajit-rocks --exclude-dir=install --exclude-dir=keyboardlayouts --exclude-dir=*arm* "\\(padding\\|margin\\|bordersize\\|width\\|height\\|radius\\|linesize\\) = [0-9]\\{1,2\\}" | grep -v '= 0' | grep -v '= [0-9]/[0-9]' | grep -Ev '(default_option_height|default_option_padding)' | grep -v scaleBySize | grep -v 'unscaled_size_check: ignore' || true)
+    # Also check Geom objects; for legibility two regular expressions rather than
+    # one enormous indecipharable blob.
+    unscaled_size_check_geom=$(grep -E -nr --include=*.lua --exclude=gesturerange_spec.lua --exclude-dir=base --exclude-dir=luajit-rocks --exclude-dir=*arm* 'Geom:new{.+ [wh] = [0-9]{1,4}' | grep -Ev '[wh] = 0' | grep -v '= [0-9]/[0-9]' | grep -v scaleBySize || true)
+
+    if [ "${unscaled_size_check}" ] || [ "${unscaled_size_check_geom}" ]; then
+        echo -e "\\n${ANSI_RED}Warning: it looks like you might be using unscaled sizes.\\nIt is almost always preferable to defer to one of the predefined sizes in ui.size in the following files:"
+        echo "${unscaled_size_check}"
+        echo "${unscaled_size_check_geom}"
+        exit_code=1
+    fi
+
+    tab_detected=$(grep -P "\\t" --include \*.lua --exclude={dateparser.lua,xml.lua} --recursive {reader,setupkoenv,datastorage}.lua frontend plugins spec || true)
+    if [ "${tab_detected}" ]; then
+        echo -e "\\n${ANSI_RED}Warning: tab character detected. Please use spaces."
+        echo "${tab_detected}"
+        exit_code=1
+    fi
+
+    untagged_todo=$(grep -Pin "[^\-]\-\-(\s+)?@?(todo|fixme|warning)" --include \*.lua --exclude={dateparser.lua,xml.lua} --recursive {reader,setupkoenv,datastorage}.lua frontend plugins spec || true)
+    if [ "${untagged_todo}" ]; then
+        echo -e "\\n${ANSI_RED}Warning: possible improperly tagged todo, fixme or warning detected."
+        echo -e "\\n${ANSI_RED}         use --- followed by @todo, @fixme or @warning."
+        echo "${untagged_todo}"
+        exit_code=1
+    fi
+
+    echo -e "\n${ANSI_GREEN}Luacheck results"
+    $(command -v luacheck) -q {reader,setupkoenv,datastorage}.lua frontend plugins spec
+
+    exit "${exit_code}"
 }
 
 function kodev-cov() {
@@ -1054,8 +1087,7 @@ OPTIONS:
         test_path="./spec/${target}/unit"
         if [ "${show_previous}" -eq 0 ]; then
             echo "Running tests in" ${test_path}
-            env LD_LIBRARY_PATH="${KO_LD_LIBRARY_PATH}" \
-                busted --lua="./luajit" \
+            busted --lua="./luajit" \
                 --sort-files \
                 -o "./spec/${target}/unit/verbose_print" \
                 --coverage \
@@ -1141,7 +1173,7 @@ TARGET:
                 fi
             else
                 if [ -n "${KODEBUG}" ]; then
-                    adb logcat 'KOReader:V ApkUpdater:V Assets:V Device:V dlopen:V EPD:V EventReceiver:V Lights:V LuaJIT:V MainActivity:V NativeGlue:V NativeThread:V Timeout:V ActivityManager:V AndroidRuntime:V DEBUG:* *:F'
+                    adb logcat 'KOReader:V ApkUpdater:V Assets:V Device:V dlopen:V EPD:V EventReceiver:V Lights:V Surface:V LuaJIT:V MainActivity:V NativeGlue:V NativeThread:V Timeout:V ActivityManager:V AndroidRuntime:V DEBUG:* *:F'
                 else
                     adb logcat 'KOReader:I MainActivity:V NativeGlue:V NativeThread:V ActivityManager:W AndroidRuntime:E DEBUG:* *:F'
                 fi
@@ -1213,7 +1245,8 @@ case "${1}" in
         kodev-test "$@"
         ;;
     check)
-        luacheck -q {reader,setupkoenv,datastorage}.lua frontend plugins spec
+        shift 1
+        kodev-check "$@"
         ;;
     cov)
         shift 1
@@ -1222,8 +1255,7 @@ case "${1}" in
     prompt)
         kodev-build
         pushd "${EMU_DIR}" && {
-            env LD_LIBRARY_PATH="${KO_LD_LIBRARY_PATH}" \
-                ./luajit -i setupkoenv.lua
+            ./luajit -i setupkoenv.lua
         } && popd || exit
         ;;
     log)

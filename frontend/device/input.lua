@@ -7,6 +7,7 @@ local DEBUG = require("dbg")
 local Event = require("ui/event")
 local GestureDetector = require("device/gesturedetector")
 local Key = require("device/key")
+local UIManager
 local framebuffer = require("ffi/framebuffer")
 local input = require("ffi/input")
 local logger = require("logger")
@@ -275,6 +276,10 @@ function Input:init()
     self._inhibitInputUntil_func = function() self:inhibitInputUntil() end
 end
 
+function Input:UIManagerReady(uimgr)
+    UIManager = uimgr
+end
+
 --[[--
 Setup a rotation_map that does nothing (for platforms where the events we get are already translated).
 --]]
@@ -501,32 +506,43 @@ function Input:resetState()
         self.gesture_detector:resetClockSource()
     end
     self:clearTimeouts()
+
+    -- Drop the slots on our end, too
+    self:newFrame()
+    self.cur_slot = self.main_finger_slot
+    self.ev_slots = {
+        [self.main_finger_slot] = {
+            slot = self.main_finger_slot,
+        },
+    }
 end
 
 function Input:handleKeyBoardEv(ev)
     -- Detect loss of contact for the "snow" protocol...
     -- NOTE: Some ST devices may also behave similarly, but we handle those via ABS_PRESSURE
     if self.snow_protocol then
-        if ev.code == C.BTN_TOUCH and ev.value == 0 then
-            -- Kernel sends it after loss of contact for *all* slots,
-            -- only once the final contact point has been lifted.
-            if #self.MTSlots == 0 then
-                -- Likely, since this is usually in its own event stream,
-                -- meaning self.MTSlots has *just* been cleared by our last EV_SYN:SYN_REPORT handler...
-                -- So, poke at the actual data to find the slots that are currently active (i.e., in the down state),
-                -- and re-populate a minimal self.MTSlots array that simply switches them to the up state ;).
-                for _, slot in pairs(self.ev_slots) do
-                    if slot.id ~= -1 then
-                        table.insert(self.MTSlots, slot)
-                        slot.id = -1
+        if ev.code == C.BTN_TOUCH then
+            if ev.value == 0 then
+                -- Kernel sends it after loss of contact for *all* slots,
+                -- only once the final contact point has been lifted.
+                if #self.MTSlots == 0 then
+                    -- Likely, since this is usually in its own event stream,
+                    -- meaning self.MTSlots has *just* been cleared by our last EV_SYN:SYN_REPORT handler...
+                    -- So, poke at the actual data to find the slots that are currently active (i.e., in the down state),
+                    -- and re-populate a minimal self.MTSlots array that simply switches them to the up state ;).
+                    for _, slot in pairs(self.ev_slots) do
+                        if slot.id ~= -1 then
+                            table.insert(self.MTSlots, slot)
+                            slot.id = -1
+                        end
                     end
-                end
-            else
-                -- Unlikely, given what we mentioned above...
-                -- Note that, funnily enough, its EV_KEY:BTN_TOUCH:1 counterpart
-                -- *can* be in the same initial event stream as the EV_ABS batch...
-                for _, MTSlot in ipairs(self.MTSlots) do
-                    self:setMtSlot(MTSlot.slot, "id", -1)
+                else
+                    -- Unlikely, given what we mentioned above...
+                    -- Note that, funnily enough, its EV_KEY:BTN_TOUCH:1 counterpart
+                    -- *can* be in the same initial event stream as the EV_ABS batch...
+                    for _, MTSlot in ipairs(self.MTSlots) do
+                        self:setMtSlot(MTSlot.slot, "id", -1)
+                    end
                 end
             end
 
@@ -534,23 +550,30 @@ function Input:handleKeyBoardEv(ev)
         end
     elseif self.wacom_protocol then
         if ev.code == C.BTN_TOOL_PEN then
-            -- Always send pen data to slot 0
-            self:setupSlotData(0)
+            -- Always send pen data to slot 2
+            self:setupSlotData(2)
             if ev.value == 1 then
                 self:setCurrentMtSlot("tool", TOOL_TYPE_PEN)
             else
                 self:setCurrentMtSlot("tool", TOOL_TYPE_FINGER)
             end
+
+            return
         elseif ev.code == C.BTN_TOUCH then
-            -- Much like on snow, use this to detect contact down & lift,
-            -- as ABS_PRESSURE may be entirely omitted from hover events,
-            -- and ABS_DISTANCE is not very clear cut...
-            self:setupSlotData(0)
-            if ev.value == 1 then
-                self:setCurrentMtSlot("id", 0)
-            else
-                self:setCurrentMtSlot("id", -1)
+            -- BTN_TOUCH is bracketed by BTN_TOOL_PEN, so we can limit this to pens, to avoid stomping on panel slots.
+            if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
+                -- Much like on snow, use this to detect contact down & lift,
+                -- as ABS_PRESSURE may be entirely omitted from hover events,
+                -- and ABS_DISTANCE is not very clear cut...
+                self:setupSlotData(2)
+                if ev.value == 1 then
+                    self:setCurrentMtSlot("id", 2)
+                else
+                    self:setCurrentMtSlot("id", -1)
+                end
             end
+
+            return
         end
     end
 
@@ -597,14 +620,12 @@ function Input:handleKeyBoardEv(ev)
 
     -- toggle fullscreen on F11
     if self:isEvKeyPress(ev) and keycode == "F11" and not self.device:isAlwaysFullscreen() then
-        local UIManager = require("ui/uimanager")
         UIManager:broadcastEvent(Event:new("ToggleFullscreen"))
     end
 
     -- quit on Alt + F4
     -- this is also emitted by the close event in SDL
     if self:isEvKeyPress(ev) and self.modifiers["Alt"] and keycode == "F4" then
-        local UIManager = require("ui/uimanager")
         UIManager:broadcastEvent(Event:new("Close")) -- Tell all widgets to close.
         UIManager:nextTick(function() UIManager:quit() end) -- Ensure the program closes in case of some lingering dialog.
     end
@@ -772,11 +793,51 @@ function Input:handleTouchEv(ev)
             self:setCurrentMtSlotChecked("x", ev.value)
         elseif ev.code == C.ABS_MT_POSITION_Y or ev.code == C.ABS_Y then
             self:setCurrentMtSlotChecked("y", ev.value)
-        elseif self.pressure_event and ev.code == self.pressure_event and ev.value == 0 then
+        elseif ev.code == self.pressure_event and ev.value == 0 then
             -- Drop hovering *pen* events
-            local tool = self:getCurrentMtSlotData("tool")
-            if tool and tool == TOOL_TYPE_PEN then
+            if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
                 self:setCurrentMtSlot("id", -1)
+            end
+        end
+    elseif ev.type == C.EV_SYN then
+        if ev.code == C.SYN_REPORT then
+            for _, MTSlot in ipairs(self.MTSlots) do
+                self:setMtSlot(MTSlot.slot, "timev", time.timeval(ev.time))
+            end
+            -- feed ev in all slots to state machine
+            local touch_gestures = self.gesture_detector:feedEvent(self.MTSlots)
+            self:newFrame()
+            local ges_evs = {}
+            for _, touch_ges in ipairs(touch_gestures) do
+                self:gestureAdjustHook(touch_ges)
+                table.insert(ges_evs, Event:new("Gesture", self.gesture_detector:adjustGesCoordinate(touch_ges)))
+            end
+            return ges_evs
+        end
+    end
+end
+
+-- This is a slightly modified version of the above, tailored to play nice with devices with multiple absolute input devices,
+-- (i.e., screen + pen), where one or both of these send conflicting events that we need to hook... (e.g., rM on mainline).
+function Input:handleMixedTouchEv(ev)
+    if ev.type == C.EV_ABS then
+        if ev.code == C.ABS_MT_SLOT then
+            self:setupSlotData(ev.value)
+        elseif ev.code == C.ABS_MT_TRACKING_ID then
+            self:setCurrentMtSlotChecked("id", ev.value)
+        elseif ev.code == C.ABS_MT_POSITION_X then
+            -- Panel
+            self:setCurrentMtSlotChecked("x", ev.value)
+        elseif ev.code == C.ABS_X then
+            -- Panel + Stylus, but we only want to honor stylus!
+            if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
+                self:setCurrentMtSlotChecked("x", ev.value)
+            end
+        elseif ev.code == C.ABS_MT_POSITION_Y then
+            self:setCurrentMtSlotChecked("y", ev.value)
+        elseif ev.code == C.ABS_Y then
+            if self:getCurrentMtSlotData("tool") == TOOL_TYPE_PEN then
+                self:setCurrentMtSlotChecked("y", ev.value)
             end
         end
     elseif ev.type == C.EV_SYN then
@@ -937,7 +998,6 @@ function Input:handleMiscGyroEv(ev)
         if rotation_mode and rotation_mode ~= old_rotation_mode and screen_mode == old_screen_mode then
             -- Cheaper than a full SetRotationMode event, as we don't need to re-layout anything.
             self.device.screen:setRotationMode(rotation_mode)
-            local UIManager = require("ui/uimanager")
             UIManager:onRotation()
         end
     else
@@ -1235,7 +1295,6 @@ function Input:waitEvent(now, deadline)
         elseif ok == nil then
             -- Something went horribly wrong, abort.
             logger.err("Polling for input events failed catastrophically")
-            local UIManager = require("ui/uimanager")
             UIManager:abort()
             break
         end
@@ -1354,7 +1413,16 @@ function Input:inhibitInput(toggle)
         end
         if not self._sdl_ev_handler then
             self._sdl_ev_handler = self.handleSdlEv
-            self.handleSdlEv = self.voidEv
+            -- This is mainly used for non-input events, so we mostly want to leave it alone (#10427).
+            -- The only exception being mwheel handling, which we *do* want to inhibit.
+            self.handleSdlEv = function(this, ev)
+                local SDL_MOUSEWHEEL = 1027
+                if ev.code == SDL_MOUSEWHEEL then
+                    return
+                else
+                    return this:_sdl_ev_handler(ev)
+                end
+            end
         end
         if not self._generic_ev_handler then
             self._generic_ev_handler = self.handleGenericEv
@@ -1395,7 +1463,6 @@ Request all input events to be ignored for some duration.
 @param set_or_seconds either `true`, in which case a platform-specific delay is chosen, or a duration in seconds (***int***).
 ]]
 function Input:inhibitInputUntil(set_or_seconds)
-    local UIManager = require("ui/uimanager")
     UIManager:unschedule(self._inhibitInputUntil_func)
     if not set_or_seconds then -- remove any previously set
         self:inhibitInput(false)

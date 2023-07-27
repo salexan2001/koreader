@@ -4,7 +4,6 @@ local Event = require("ui/event")
 local Geom = require("ui/geometry")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Math = require("optmath")
-local ReaderZooming = require("apps/reader/modules/readerzooming")
 local UIManager = require("ui/uimanager")
 local bit = require("bit")
 local logger = require("logger")
@@ -192,10 +191,6 @@ function ReaderPaging:onReadSettings(config)
     self:_gotoPage(config:readSetting("last_page") or 1)
     self.flipping_zoom_mode = config:readSetting("flipping_zoom_mode") or "page"
     self.flipping_scroll_mode = config:isTrue("flipping_scroll_mode")
-    self.is_reflowed = config:has("kopt_text_wrap") and config:readSetting("kopt_text_wrap") == 1
-    for _, v in ipairs(ReaderZooming.zoom_pan_settings) do
-        self[v] = config:readSetting(v) or G_reader_settings:readSetting(v) or ReaderZooming[v]
-    end
 end
 
 function ReaderPaging:onSaveSettings()
@@ -231,7 +226,7 @@ book, the page view will be roughly the same.
 --]]
 function ReaderPaging:setPagePosition(page, pos)
     logger.dbg("set page position", pos)
-    self.page_positions[page] = pos
+    self.page_positions[page] = pos ~= 0 and pos or nil
     self.ui:handleEvent(Event:new("PagePositionUpdated"))
 end
 
@@ -273,15 +268,11 @@ function ReaderPaging:onToggleBookmarkFlipping()
 
     if self.bookmark_flipping_mode then
         self.orig_flipping_mode = self.view.flipping_visible
-        self.orig_dogear_mode = self.view.dogear_visible
-
         self.view.flipping_visible = true
-        self.view.dogear_visible = true
         self.bm_flipping_orig_page = self.current_page
         self:enterFlippingMode()
     else
         self.view.flipping_visible = self.orig_flipping_mode
-        self.view.dogear_visible = self.orig_dogear_mode
         self:exitFlippingMode()
         self:_gotoPage(self.bm_flipping_orig_page)
     end
@@ -722,7 +713,7 @@ function ReaderPaging:onUpdateScrollPageGamma(gamma)
     return true
 end
 
-function ReaderPaging:getNextPageState(blank_area, offset)
+function ReaderPaging:getNextPageState(blank_area, image_offset)
     local page_area = self.view:getPageArea(
         self.view.state.page,
         self.view.state.zoom,
@@ -730,21 +721,25 @@ function ReaderPaging:getNextPageState(blank_area, offset)
     local visible_area = Geom:new{x = 0, y = 0}
     visible_area.w, visible_area.h = blank_area.w, blank_area.h
     visible_area.x, visible_area.y = page_area.x, page_area.y
-    visible_area = visible_area:shrinkInside(page_area, offset.x, offset.y)
+    visible_area = visible_area:shrinkInside(page_area, image_offset.x, image_offset.y)
     -- shrink blank area by the height of visible area
     blank_area.h = blank_area.h - visible_area.h
+    local page_offset = Geom:new{x = self.view.state.offset.x, y = 0}
+    if blank_area.w > page_area.w then
+        page_offset:offsetBy((blank_area.w - page_area.w) / 2, 0)
+    end
     return {
         page = self.view.state.page,
         zoom = self.view.state.zoom,
         rotation = self.view.state.rotation,
         gamma = self.view.state.gamma,
-        offset = Geom:new{ x = self.view.state.offset.x, y = 0},
+        offset = page_offset,
         visible_area = visible_area,
         page_area = page_area,
     }
 end
 
-function ReaderPaging:getPrevPageState(blank_area, offset)
+function ReaderPaging:getPrevPageState(blank_area, image_offset)
     local page_area = self.view:getPageArea(
         self.view.state.page,
         self.view.state.zoom,
@@ -753,15 +748,19 @@ function ReaderPaging:getPrevPageState(blank_area, offset)
     visible_area.w, visible_area.h = blank_area.w, blank_area.h
     visible_area.x = page_area.x
     visible_area.y = page_area.y + page_area.h - visible_area.h
-    visible_area = visible_area:shrinkInside(page_area, offset.x, offset.y)
+    visible_area = visible_area:shrinkInside(page_area, image_offset.x, image_offset.y)
     -- shrink blank area by the height of visible area
     blank_area.h = blank_area.h - visible_area.h
+    local page_offset = Geom:new{x = self.view.state.offset.x, y = 0}
+    if blank_area.w > page_area.w then
+        page_offset:offsetBy((blank_area.w - page_area.w) / 2, 0)
+    end
     return {
         page = self.view.state.page,
         zoom = self.view.state.zoom,
         rotation = self.view.state.rotation,
         gamma = self.view.state.gamma,
-        offset = Geom:new{ x = self.view.state.offset.x, y = 0},
+        offset = page_offset,
         visible_area = visible_area,
         page_area = page_area,
     }

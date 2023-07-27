@@ -25,6 +25,7 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
 local _ = require("gettext")
+local C_ = _.pgettext
 local Screen = Device.screen
 local T = require("ffi/util").template
 
@@ -249,6 +250,7 @@ local ReaderStyleTweak = WidgetContainer:extend{
     nb_enabled_tweaks = 0, -- for use by main menu item
     css_text = nil, -- aggregated css text from tweaks individual css snippets
     enabled = true, -- allows for toggling between selected tweaks / none
+    dispatcher_prefix = "style_tweak_",
 }
 
 function ReaderStyleTweak:isTweakEnabled(tweak_id)
@@ -446,12 +448,12 @@ function ReaderStyleTweak:onSaveSettings()
 end
 
 local function dispatcherRegisterStyleTweak(tweak_id, tweak_title)
-    Dispatcher:registerAction("style_tweak_"..tweak_id,
+    Dispatcher:registerAction(ReaderStyleTweak.dispatcher_prefix..tweak_id,
         {category="none", event="ToggleStyleTweak", arg=tweak_id, title=T(_("Toggle style tweak: %1"), tweak_title), rolling=true})
 end
 
 local function dispatcherUnregisterStyleTweak(tweak_id)
-    Dispatcher:removeAction("style_tweak_"..tweak_id)
+    Dispatcher:removeAction(ReaderStyleTweak.dispatcher_prefix..tweak_id)
 end
 
 function ReaderStyleTweak:init()
@@ -566,6 +568,11 @@ You can enable individual tweaks on this book with a tap, or view more details a
                             if self.tweaks_in_dispatcher[item.id] then
                                 self.tweaks_in_dispatcher[item.id] = nil
                                 dispatcherUnregisterStyleTweak(item.id)
+                                local Profiles = self.ui.profiles
+                                if Profiles then
+                                    Profiles:updateGestures(self.dispatcher_prefix..item.id)
+                                    Profiles:updateProfiles(self.dispatcher_prefix..item.id)
+                                end
                             else
                                 self.tweaks_in_dispatcher[item.id] = item.title
                                 dispatcherRegisterStyleTweak(item.id, item.title)
@@ -576,7 +583,7 @@ You can enable individual tweaks on this book with a tap, or view more details a
                 end,
                 callback = function()
                     -- enable/disable only for this book
-                    self:onToggleStyleTweak(item.id, item)
+                    self:onToggleStyleTweak(item.id, item, true) -- no notification
                 end,
                 separator = item.separator,
             })
@@ -710,7 +717,8 @@ function ReaderStyleTweak:addToMainMenu(menu_items)
     }
 end
 
-function ReaderStyleTweak:onToggleStyleTweak(tweak_id, item)
+function ReaderStyleTweak:onToggleStyleTweak(tweak_id, item, no_notification)
+    local text
     local enabled, g_enabled = self:isTweakEnabled(tweak_id)
     if enabled then
         if g_enabled then
@@ -720,6 +728,7 @@ function ReaderStyleTweak:onToggleStyleTweak(tweak_id, item)
         else
             self.doc_tweaks[tweak_id] = nil
         end
+        text = T(C_("Style tweak", "Off: %1"), self.tweaks_in_dispatcher[tweak_id])
     else
         local conflicts_with
         if item then
@@ -736,8 +745,14 @@ function ReaderStyleTweak:onToggleStyleTweak(tweak_id, item)
             self:resolveConflictsBeforeEnabling(tweak_id, conflicts_with)
         end
         self.doc_tweaks[tweak_id] = true
+        text = T(C_("Style tweak", "On: %1"), self.tweaks_in_dispatcher[tweak_id])
     end
     self:updateCssText(true) -- apply it immediately
+    if not no_notification then
+        UIManager:show(Notification:new{
+            text = text,
+        })
+    end
 end
 
 function ReaderStyleTweak:onDispatcherRegisterActions()
@@ -747,13 +762,22 @@ function ReaderStyleTweak:onDispatcherRegisterActions()
 end
 
 local BOOK_TWEAK_SAMPLE_CSS = [[
-p.someTitleClassName { text-indent: 0; }
-
-DIV.advertisement { display: none !important; }
-
+/* Remove indent from some P used as titles */
+p.someTitleClassName {
+    text-indent: 0;
+}
+/* Get in-page footnotes when no tweak works */
 .footnoteContainerClassName {
     -cr-hint: footnote-inpage;
-    margin: 0 !important;
+}
+/* Help getting some alternative ToC when no headings */
+.someSeparatorClassName {
+    -cr-hint: toc-level1;
+    break-before: always;
+}
+/* Hide annoying content */
+DIV.someAdvertisement {
+    display: none !important;
 }
 ]]
 
@@ -761,6 +785,16 @@ local BOOK_TWEAK_INPUT_HINT = T([[
 /* %1 */
 
 %2]], _("You can add CSS snippets which will be applied only to this book."), BOOK_TWEAK_SAMPLE_CSS)
+
+local CSS_SUGGESTIONS = {
+    { "-cr-hint: footnote-inpage;", _("When set on a block element containing the target id of a href, this block element will be shown as an in-page footnote.")},
+    { "-cr-hint: non-linear-combining;", _("Can be set on some specific DocFragments (ie. DocFragment[id*=16]) to ignore them in the linear pages flow.")},
+    { "-cr-hint: toc-level1;", _("When set on an element, its text can be used to build the alternative table of contents.")},
+    { "display: run-in !important,", _("When set on a block element, this element content will be inlined with the next block element.")},
+    { "font-size: 1rem !important;", _("1rem will enforce your main font size")},
+    { "hyphens: none !important", _("Disables hyphenation inside the targeted elements.")},
+    { "text-indent: 1.2em !important;", _("1.2em is our default text indentation.")},
+}
 
 function ReaderStyleTweak:editBookTweak(touchmenu_instance)
     local InputDialog = require("ui/widget/inputdialog")
@@ -814,7 +848,7 @@ function ReaderStyleTweak:editBookTweak(touchmenu_instance)
         add_nav_bar = true,
         scroll_by_pan = true,
         buttons = {{
-            -- First button on first row (row will be completed with Reset|Save|Close)
+            -- First buttons on first row (row will be completed with Reset|Save|Close)
             {
                 id = tweak_button_id,
                 text_func = function()
@@ -830,6 +864,40 @@ function ReaderStyleTweak:editBookTweak(touchmenu_instance)
                         editor:setInputText(css_text, true)
                         toggle_tweak_button()
                     end
+                end,
+            },
+            {
+                id = "css_suggestions_button_id",
+                text = "CSS \u{2261}",
+                callback = function()
+                    local suggestions_popup_widget
+                    local buttons = {}
+                    for _, suggestion in ipairs(CSS_SUGGESTIONS) do
+                        table.insert(buttons, {{
+                            text = suggestion[1],
+                            align = "left",
+                            callback = function()
+                                UIManager:close(suggestions_popup_widget)
+                                editor._input_widget:addChars(suggestion[1])
+                            end,
+                            hold_callback = suggestion[2] and function()
+                                UIManager:show(InfoMessage:new{ text = suggestion[2] })
+                            end or nil
+                        }})
+                    end
+                    local ButtonDialog = require("ui/widget/buttondialog")
+                    suggestions_popup_widget = ButtonDialog:new{
+                        modal = true, -- needed when keyboard is shown
+                        width = math.floor(Screen:getWidth() * 0.9), -- max width, will get smaller
+                        shrink_unneeded_width = true,
+                        buttons = buttons,
+                        anchor = function()
+                            -- we return prefers_pop_down=true so it pops over the keyboard
+                            -- instead of the text if it can
+                            return editor.button_table:getButtonById("css_suggestions_button_id").dimen, true
+                        end,
+                    }
+                    UIManager:show(suggestions_popup_widget)
                 end,
             },
         }},

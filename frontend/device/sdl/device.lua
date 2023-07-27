@@ -1,5 +1,7 @@
 local Event = require("ui/event")
+local Geom = require("ui/geometry")
 local Generic = require("device/generic/device")
+local UIManager
 local SDL = require("ffi/SDL2_0")
 local ffi = require("ffi")
 local logger = require("logger")
@@ -21,12 +23,11 @@ local function isUrl(s)
 end
 
 local function isCommand(s)
-    return os.execute("which "..s.." >/dev/null 2>&1") == 0
+    return os.execute("command -v "..s.." >/dev/null") == 0
 end
 
 local function runCommand(command)
-    local env = jit.os ~= "OSX" and 'env -u LD_LIBRARY_PATH ' or ""
-    return os.execute(env..command) == 0
+    return os.execute(command) == 0
 end
 
 local function getDesktopDicts()
@@ -128,7 +129,6 @@ local Emulator = Device:extend{
     hasNaturalLight = yes,
     hasNaturalLightApi = yes,
     hasWifiToggle = yes,
-    hasWifiManager = yes,
     -- Not really, Device:reboot & Device:powerOff are not implemented, so we just exit ;).
     canPowerOff = yes,
     canReboot = yes,
@@ -171,6 +171,9 @@ function Device:init()
         y = self.window.top,
         is_always_portrait = self.isAlwaysPortrait(),
     }
+    -- Pickup the updated window sizes if they were enforced in S.open (we'll get the coordinates via the inital SDL_WINDOWEVENT_MOVED)...
+    self.window.width = self.screen.w
+    self.window.height = self.screen.h
     self.powerd = require("device/sdl/powerd"):new{device = self}
 
     local ok, re = pcall(self.screen.setWindowIcon, self.screen, "resources/koreader.png")
@@ -181,8 +184,7 @@ function Device:init()
         device = self,
         event_map = require("device/sdl/event_map_sdl2"),
         handleSdlEv = function(device_input, ev)
-            local Geom = require("ui/geometry")
-            local UIManager = require("ui/uimanager")
+
 
             -- SDL events can remain cdata but are almost completely transparent
             local SDL_TEXTINPUT = 771
@@ -245,13 +247,14 @@ function Device:init()
                     ReaderUI:doShowReader(dropped_file_path)
                 end
             elseif ev.code == SDL_WINDOWEVENT_RESIZED then
-                device_input.device.screen.screen_size.w = ev.value.data1
-                device_input.device.screen.screen_size.h = ev.value.data2
                 device_input.device.screen.resize(device_input.device.screen, ev.value.data1, ev.value.data2)
                 self.window.width = ev.value.data1
                 self.window.height = ev.value.data2
 
                 local new_size = device_input.device.screen:getSize()
+                device_input.device.screen.screen_size.w = new_size.w
+                device_input.device.screen.screen_size.h = new_size.h
+
                 logger.dbg("Resizing screen to", new_size)
 
                 -- try to catch as many flies as we can
@@ -342,7 +345,11 @@ function Device:toggleFullscreen()
     end
 end
 
-function Device:setEventHandlers(UIManager)
+function Device:UIManagerReady(uimgr)
+    UIManager = uimgr
+end
+
+function Device:setEventHandlers(uimgr)
     if not self:canSuspend() then
         -- If we can't suspend, we have no business even trying to, as we may not have overloaded `Device:simulateResume`.
         -- Instead, rely on the Generic Suspend/Resume handlers.
@@ -350,20 +357,34 @@ function Device:setEventHandlers(UIManager)
     end
 
     UIManager.event_handlers.Suspend = function()
-        self:_beforeSuspend()
         self:simulateSuspend()
     end
     UIManager.event_handlers.Resume = function()
         self:simulateResume()
-        self:_afterResume()
     end
     UIManager.event_handlers.PowerRelease = function()
         -- Resume if we were suspended
         if self.screen_saver_mode then
-            UIManager.event_handlers.Resume()
+            if self.screen_saver_lock then
+                UIManager.event_handlers.Suspend()
+            else
+                UIManager.event_handlers.Resume()
+            end
         else
             UIManager.event_handlers.Suspend()
         end
+    end
+end
+
+function Device:initNetworkManager(NetworkMgr)
+    function NetworkMgr:isWifiOn() return true end
+    function NetworkMgr:isConnected()
+        -- Pull the default gateway first, so we don't even try to ping anything if there isn't one...
+        local default_gw = Device:getDefaultRoute()
+        if not default_gw then
+            return false
+        end
+        return 0 == os.execute("ping -c1 -w2 " .. default_gw .. " > /dev/null")
     end
 end
 
@@ -373,16 +394,19 @@ function Emulator:simulateSuspend()
     local Screensaver = require("ui/screensaver")
     Screensaver:setup()
     Screensaver:show()
+
+    self.powerd:beforeSuspend()
 end
 
 function Emulator:simulateResume()
     local Screensaver = require("ui/screensaver")
     Screensaver:close()
+
+    self.powerd:afterResume()
 end
 
 -- fake network manager for the emulator
 function Emulator:initNetworkManager(NetworkMgr)
-    local UIManager = require("ui/uimanager")
     local connectionChangedEvent = function()
         if G_reader_settings:nilOrTrue("emulator_fake_wifi_connected") then
             UIManager:broadcastEvent(Event:new("NetworkConnected"))
@@ -401,6 +425,7 @@ function Emulator:initNetworkManager(NetworkMgr)
     function NetworkMgr:isWifiOn()
         return G_reader_settings:nilOrTrue("emulator_fake_wifi_connected")
     end
+    NetworkMgr.isConnected = NetworkMgr.isWifiOn
 end
 
 io.write("Starting SDL in " .. SDL.getBasePath() .. "\n")

@@ -19,9 +19,9 @@ describe("Readerui module", function()
         -- remove history settings and sidecar settings
         DocSettings:open(sample_epub):purge()
         local doc_settings = DocSettings:open(sample_epub)
-        assert.are.same(doc_settings.data, {})
+        assert.are.same(doc_settings.data, {doc_path = sample_epub})
         readerui:saveSettings()
-        assert.are_not.same(readerui.doc_settings.data, {})
+        assert.are_not.same(readerui.doc_settings.data, {doc_path = sample_epub})
         doc_settings = DocSettings:open(sample_epub)
         assert.truthy(doc_settings.data.last_xpointer)
         assert.are.same(doc_settings.data.last_xpointer,
@@ -44,7 +44,7 @@ describe("Readerui module", function()
     end)
     it("should not reset ReaderUI.instance by mistake", function()
         ReaderUI:doShowReader(sample_epub) -- spins up a new, sane instance
-        local new_readerui = ReaderUI:_getRunningInstance()
+        local new_readerui = ReaderUI.instance
         assert.is.truthy(new_readerui.document)
         -- This *will* trip:
         -- * A pair of ReaderUI instance mimsatch warnings (on open/close) because it bypasses the safety of doShowReader!
